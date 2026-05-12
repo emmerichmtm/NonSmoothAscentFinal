@@ -1,0 +1,15 @@
+MANIFEST.txt
+PRIMEarxiv.sty
+README.md
+compile_article.sh
+figure_h5_iteration30_vectorfield_preview.png
+figure_h5_iteration30_vectorfield_standalone.pdf
+figure_h5_iteration30_vectorfield_standalone.tex
+layered_magnitude_core_2d.py
+layered_magnitude_set_gradient_article.pdf
+layered_magnitude_set_gradient_article.tex
+reproduce_2d_path_figures.py
+reproduce_convergence_behaviour.py
+reproduce_h5_iteration30_vectorfield.py
+requirements.txt
+run_reproduction_scripts.sh

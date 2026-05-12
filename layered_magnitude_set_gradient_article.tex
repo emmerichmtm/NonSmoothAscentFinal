@@ -1,0 +1,2461 @@
+\documentclass{article}
+\usepackage[T1]{fontenc}
+\usepackage[utf8]{inputenc}
+\usepackage{lmodern}
+\usepackage[margin=1in]{geometry}
+\usepackage{amsmath,amssymb,amsthm,mathtools}
+\usepackage{enumitem}
+\usepackage{tikz}
+\usepackage{pgfplots}
+\pgfplotsset{compat=1.18}
+\usetikzlibrary{arrows.meta,calc,patterns,positioning}
+\usepackage{xcolor}
+\usepackage{PRIMEarxiv}
+\usepackage{algorithm}
+\usepackage{algpseudocode}
+\title{Layered Hypervolume and Magnitude Indicator Ascent}
+
+
+\definecolor{darkblue}{RGB}{11,27,205}
+\definecolor{darkgreen}{RGB}{11,27,05}
+\definecolor{darkorange}{RGB}{253,18,11}
+\definecolor{layerblue}{RGB}{138,182,255}
+\definecolor{layergreen}{RGB}{141,197,135}
+\definecolor{layerorange}{RGB}{253,188,142}
+\usepackage{hyperref}
+\hypersetup{colorlinks=true,linkcolor=blue!50!black,urlcolor=blue!50!black,citecolor=blue!50!black}
+
+\title{Nonsmooth Set-Gradient Ascent for Layered Hypervolume and Magnitude Indicators in Pareto-Front Approximation}
+\author{
+Michael T. M. Emmerich\\
+Faculty of Information Technology, University of Jyväskylä, Finland\\
+\texttt{michael.t.m.emmerich@jyu.fi}
+}
+\date{Faculty of Information Technology, University of Jyväskylä, Finland}
+
+\newtheorem{definition}{Definition}
+\newtheorem{proposition}{Proposition}
+\newtheorem{theorem}{Theorem}
+\newtheorem{remark}{Remark}
+\newtheorem{example}{Example}
+
+\newcommand{\Mag}{\operatorname{Mag}}
+\newcommand{\HV}{\operatorname{HV}}
+\newcommand{\clarke}{\partial^{\!C}}
+\newcommand{\R}{\mathbb{R}}
+\newcommand{\Ginf}{\text{\textcircled{\scriptsize 1}}}
+\newcommand{\front}[1]{A^{(#1)}}
+\newcommand{\Dom}{\operatorname{D}}
+\newcommand{\proj}{\operatorname{proj}}
+
+\begin{document}
+\maketitle
+
+\begin{abstract}
+We study nonsmooth set-gradient ascent methods for constructing finite Pareto-front approximation sets by optimizing layered set indicators.  The central idea is to evaluate a base indicator on successive nondomination layers of the current approximation set and to combine the resulting values with rapidly decreasing layer weights.  This gives dominated points a controlled influence without allowing deeper layers to outweigh the first front.  We treat two base indicators in this common framework: the standard anchored hypervolume and the dominated-set magnitude, whose low-dimensional expansion contains extent, projected-area, and volume terms.  The resulting scalar objectives are nonsmooth because nondomination layers change combinatorially and because the active orthogonal-union geometry of each layer changes piecewise.
+
+For the biobjective magnitude case we compare a lexicographic formulation with an infinitesimal-style unary encoding and record their equivalence.  For the finite-$\varepsilon$ scalar surrogate, we isolate the two main nonsmoothness mechanisms and prove chamberwise Lipschitz continuity on bounded sets; a two-point counterexample shows that the hard-layer scalarization is not globally continuous across layer switches.  These observations motivate a Clarke-style set-gradient ascent viewpoint and a practical projected finite-difference implementation with optional repulsion and perturbation-based recovery from stagnation.  Computational illustrations include biobjective triangle and curved-front problems, a three-objective supersphere benchmark, and convergence traces comparing layered magnitude ascent with layered hypervolume ascent.
+\end{abstract}
+
+\section{Introduction}
+A finite approximation set is often the practical output of a multiobjective optimization algorithm.  Instead of returning a single point, the algorithm returns a set of objective vectors that should represent the trade-off surface.  This naturally leads to set-valued search dynamics: the variables are the coordinates of all approximation points, and the objective is a quality indicator of the set as a whole.
+
+We use the following notation for the underlying Pareto-front approximation problem.  The decision space is denoted by $\mathcal X$, and a feasible decision $x\in\mathcal X$ is mapped into objective space by an objective vector $F(x)=(F_1(x),\dots,F_m(x))$.  The component functions are denoted by lowercase symbols $f_i$, so that $F_i(x)=f_i(x)$ is the corresponding objective value.  In figures and tables, $F_i$ denotes an objective-space coordinate or value, while $f_i$ denotes the function itself.  For maximization, an objective vector $y\in\mathbb R^m$ weakly Pareto-dominates $z\in\mathbb R^m$ if $y_i\ge z_i$ for all $i$, and strictly dominates it if, in addition, $y\ne z$.  A decision is efficient if no other feasible decision maps to an objective vector that strictly dominates its objective vector.  The set of all efficient decisions is the efficient set, and its image in objective space is the Pareto front.  The Pareto-front approximation problem is to construct a finite set of decision vectors, or directly a finite set of objective vectors, that represents this front well while keeping the approximation set small.
+
+The most prominent set indicator is the hypervolume indicator.  Hypervolume is powerful, but in its standard form it only evaluates the current nondominated set; dominated approximation points do not affect the indicator.  The same issue arises for dominated-set magnitude if it is applied only to the union of dominated boxes.  A natural remedy is to decompose the approximation set into nondomination layers and to evaluate a base indicator on each layer separately.  This paper studies the resulting \emph{layered indicators} and the nonsmooth ascent dynamics that they induce.
+
+The word \emph{set-gradient} is used here in a concrete computational sense: we differentiate, or approximate by finite differences, a scalar layered indicator with respect to the coordinates of all points in the approximation set.  The resulting direction field moves the set as a whole.  The idea of differentiating an entire finite approximation set arose in hypervolume-gradient work on S-metric maximization~\cite{emmerichdeutzbeume2007}; it is not limited to hypervolume, since set-based derivatives and Newton steps have also been developed for distance-based indicators such as the averaged Hausdorff distance~\cite{uribeetal2020hausdorffnewton}.  The word \emph{nonsmooth} is essential because the layer structure changes when dominance relations change, and because the orthogonal-union geometry behind hypervolume and magnitude changes when different boxes, faces, or extrema become active.
+
+\begin{figure}[t]
+\centering
+\begin{tikzpicture}[scale=0.72]
+  % Grid and axes
+  \draw[step=1cm,gray!45,thin] (0,0) grid (8,8);
+  \draw[->,thick] (0,0) -- (8.35,0) node[right] {$F_1$};
+  \draw[->,thick] (0,0) -- (0,8.35) node[above] {$F_2$};
+  \foreach \x in {0,...,8} \draw (\x,0) -- +(0,-0.08) node[below] {\x};
+  \foreach \y in {0,...,8} \draw (0,\y) -- +(-0.08,0) node[left] {\y};
+
+  % Layer 1 dominated cells: points (1,8), (5,4), (7,3)
+  \foreach \x/\y in {
+    0/0,0/1,0/2,0/3,0/4,0/5,0/6,0/7,
+    1/0,1/1,1/2,1/3,
+    2/0,2/1,2/2,2/3,
+    3/0,3/1,3/2,3/3,
+    4/0,4/1,4/2,4/3,
+    5/0,5/1,5/2,
+    6/0,6/1,6/2}
+    {\fill[layerblue,opacity=1] (\x,\y) rectangle ++(1,1);}
+
+  % Layer 2 dominated cells: points (1,7), (3,4), (6,2)
+  \foreach \x/\y in {
+    0/0,0/1,0/2,0/3,0/4,0/5,0/6,
+    1/0,1/1,1/2,1/3,
+    2/0,2/1,2/2,2/3,
+    3/0,3/1,
+    4/0,4/1,
+    5/0,5/1}
+    {\fill[layergreen,opacity=1] (\x,\y) rectangle ++(1,1);}
+
+  % Layer 3 dominated cells: points (1,4), (4,1)
+  \foreach \x/\y in {
+    0/0,0/1,0/2,0/3,1/0,2/0,3/0}
+    {\fill[layerorange,opacity=1] (\x,\y) rectangle ++(1,1);}
+
+  % Points
+  \fill[darkblue] (1,8) circle (3.2pt);
+  \fill[darkblue] (5,4) circle (3.2pt);
+  \fill[darkblue] (7,3) circle (3.2pt);
+
+  \fill[darkgreen] (1,7) circle (3.2pt);
+  \fill[darkgreen] (3,4) circle (3.2pt);
+  \fill[darkgreen] (6,2) circle (3.2pt);
+
+  \fill[darkorange] (1,4) circle (3.2pt);;
+  \fill[darkorange] (4,1) circle (3.2pt);;
+
+  % Labels
+  \node[above right] at (1,8) {$(1,8)$};
+  \node[above right] at (5,4) {$(5,4)$};
+  \node[above right] at (7,3) {$(7,3)$};
+
+  \node[above right] at (1.14,7.14) {$(1,7)$};
+  \node[above right] at (3.14,4.14) {$(3,4)$};
+  \node[above right] at (6.14,2.14) {$(6,2)$};
+
+  \node[above right] at (1.08,4.12) {$(1,4)$};
+  \node[above right] at (4.08,1.12) {$(4,1)$};
+
+  % Legend
+  \begin{scope}[shift={(5.0,7.6)}]
+    \fill[layerblue,opacity=0.40] (0,0) rectangle +(0.35,0.25);
+    \draw[black] (0,0) rectangle +(0.35,0.25);
+    \node[anchor=west] at (0.45,0.125) {Layer 1};
+
+    \fill[layergreen,opacity=0.40] (0,-0.45) rectangle +(0.35,0.25);
+    \draw[black] (0,-0.45) rectangle +(0.35,0.25);
+    \node[anchor=west] at (0.45,-0.325) {Layer 2};
+
+    \fill[layerorange,opacity=0.40] (0,-0.90) rectangle +(0.35,0.25);
+    \draw[black] (0,-0.90) rectangle +(0.35,0.25);
+    \node[anchor=west] at (0.45,-0.775) {Layer 3};
+  \end{scope}
+\end{tikzpicture}
+\caption{A layered integer-grid example for the dominated-set magnitude. The first, second, and third nondomination layers are shown in light blue, light green, and light orange, respectively, together with their origin-anchored dominated regions.}
+\label{fig:intro-layered-example}
+\end{figure}
+
+Figure~\ref{fig:intro-layered-example} shows the layer mechanism on a small integer grid.  The picture is drawn for dominated-set magnitude, but the same decomposition into first, second, and deeper nondomination layers is used for layered hypervolume.  Each layer contributes its own anchored dominated region; the layer weights then enforce the intended hierarchy, so that improving the first nondominated front dominates improvements obtained only in deeper layers.
+
+The paper develops this idea at two levels.  At the framework level, a layered indicator is obtained by choosing a base set indicator, such as hypervolume or magnitude, applying it to each nondomination layer, and adding the weighted contributions.  At the method level, we study nonsmooth set-gradient ascent for these objectives.  On fixed combinatorial chambers the indicator is differentiable or piecewise differentiable; at dominance switches the appropriate interpretation is Clarke-motivated and nonsmooth.
+
+The main theoretical details are developed for the biobjective dominated-set magnitude indicator, where the geometry is explicit.  We define both a lexicographic layered form and an infinitesimal-style unary encoding and show that they induce the same ordering.  We then identify two sources of nonsmoothness for the finite-$\varepsilon$ scalar surrogate: changing nondomination layers and changing active staircase geometry.  On chambers with fixed layer membership we prove Lipschitz continuity on bounded sets, whereas a two-point example shows that the hard-layer scalarization is not continuous across layer switches.
+
+The computational part instantiates the same set-gradient idea for both layered magnitude and layered hypervolume.  We use projected finite-difference ascent in small biobjective examples and exact or sweep-based indicator gradients in three-objective examples.  A short-range repulsion term prevents coincident points, and longer convergence runs include a perturbation-and-recovery step after stagnation.  The numerical experiments include a triangle front, a smooth quadratic decision-space map with a curved Pareto front, and a three-objective supersphere benchmark with an analytically described Pareto-front surface.  These experiments are intended to show how the layered construction changes the motion of dominated points and how magnitude and hypervolume differ once they are placed in the same nonsmooth layered-indicator framework.
+\section{Related work and positioning}
+The nonsmooth-optimization background for the present paper is classical Clarke analysis; for general definitions and foundational results we refer to Clarke's monograph~\cite{clarke1990}.  In multiobjective optimization, nonsmooth methods have long been studied in settings where vector-valued structure and generalized derivatives must be handled simultaneously; an early example is the interactive nonsmooth method of Miettinen and Makela~\cite{miettinenmakela1993}.  The present paper does not develop a full nonsmooth convergence theory.  Instead, it uses the Clarke viewpoint to interpret the chamber structure of layered set indicators and to motivate the projected set-gradient ascent schemes used in the experiments.
+
+From the computational side, our numerical scheme is closest in spirit to methods that update an approximation set as a whole.  Direct Multisearch~\cite{custodioetal2011} is a well-known derivative-free framework for multiobjective optimization.  The first hypervolume-indicator gradient method was introduced in the gradient-based/evolutionary relay hybrid for S-metric maximization~\cite{emmerichdeutzbeume2007}, and later hypervolume-indicator gradient ascent work developed step-size control and practical ascent mechanisms for multiobjective optimization~\cite{wangdeutzbackemmerich2017}.  Uncrowded hypervolume gradient ascent~\cite{deistetal2020} further shows how a performance indicator can induce a gradient field that distributes points along a front.  The structure of hypervolume gradient fields and their zeros was studied in~\cite{emmerichdeutz2014}.  Our layered hypervolume construction keeps this volume-based viewpoint but extends the scalar objective to dominated layers as well as to the first front.
+
+The second indicator used here is the dominated-set magnitude.  Its geometric part is tied to the notion of magnitude in metric geometry, introduced systematically by Leinster~\cite{leinster2013}.  The magnitude of dominated sets used here is specialized to low-dimensional anchored regions and was developed in the companion preprint~\cite{emmerich2026magnitudedominatedsetspareto}.  The contribution of the present paper is to place dominated-set magnitude next to hypervolume inside a common layered nonsmooth-indicator framework, and to study the corresponding set-gradient ascent dynamics on representative Pareto-front approximation problems.
+
+\section{Layered hypervolume and magnitude indicators}
+For the theoretical development in this section, we specialize the notation from the introduction to the biobjective objective-space setting. Let $A=\{a^{(1)},\dots,a^{(\mu)}\}\subset \R^2$ be a finite approximation set for a biobjective maximization problem, ordered by Pareto dominance as defined above.
+
+The nondomination layers of $A$ are denoted by
+\[
+\front{1},\front{2},\dots,\front{L},
+\]
+where $\front{1}$ is the first nondominated front of $A$, $\front{2}$ is the first nondominated front of $A\setminus \front{1}$, and so on.  The layer construction is independent of the base indicator.  If $\mathcal I$ is any set indicator that can be evaluated on a finite layer, its finite-$\varepsilon$ layered version is
+\[
+\mathcal L_{\varepsilon}^{\mathcal I}(A)
+ :=\sum_{\ell=1}^{L}\varepsilon^{\ell-1}\mathcal I(\front{\ell}),
+ \qquad 0<\varepsilon\ll 1.
+\]
+In this paper the two main choices are the anchored hypervolume $\HV$ and the dominated-set magnitude $\Mag$.  Thus layered hypervolume is obtained by taking $\mathcal I(B)=\HV(B)$, while layered magnitude is obtained by taking $\mathcal I(B)=\Mag(\Dom(B))$.
+
+For a finite set $B\subseteq [0,\infty)^2$, let
+\[
+\Dom(B):=\bigcup_{b\in B}[0,b_1]\times[0,b_2]
+\]
+be its origin-anchored dominated set. In two dimensions we use the low-dimensional magnitude formula
+\[
+\Mag(\Dom(B))=1+\frac{X(B)+Y(B)}{2}+\frac{\HV(B)}{4},
+\]
+where
+\[
+X(B)=\max_{b\in B} b_1,
+\qquad
+Y(B)=\max_{b\in B} b_2,
+\]
+and $\HV(B)=\operatorname{area}(\Dom(B))$ is the usual anchored hypervolume.  This formula makes the relationship between the two indicators explicit: hypervolume is the area term, while magnitude additionally records coordinate extent.
+
+\begin{definition}[Lexicographic layered indicator]
+For a base indicator $\mathcal I$, the lexicographic layered indicator of $A$ is
+\[
+I^{\mathcal I}_{\mathrm{lex}}(A):=
+\bigl(\mathcal I(\front{1}),\mathcal I(\front{2}),\dots,\mathcal I(\front{L})\bigr),
+\]
+ordered lexicographically.  The cases used below are $\mathcal I(B)=\HV(B)$ and $\mathcal I(B)=\Mag(\Dom(B))$.
+\end{definition}
+
+\begin{definition}Unary-encoded, layered magnitude]
+For the magnitude instantiation one may formally encode the same hierarchy by
+\[
+I_{\Ginf}(A):=
+\sum_{i=1}^{L}\Mag(\Dom(\front{i}))\,\Ginf^{-i+1},
+\]
+where $\Ginf$ denotes Sergeyev's grossone, an infinite unit from the methodology of numerical infinities and infinitesimals~\cite{sergeyev2017numerical}.  Here the notation is used as a numerically convenient, but order-correct, scalar encoding of infinitesimals of different lexicographic orders associated with the contributions of the nondomination layers.  A worse dominance-rank layer is multiplied by a strictly lower-order infinitesimal and can therefore never compensate for deterioration in any better dominance-rank layer.  Thus the unary notation records the same strict priority hierarchy as the lexicographic formulation, without introducing finite scale-separation constants.  For actual numerical experiments we replace $\Ginf^{-1}$ by a small positive parameter $\varepsilon$.
+\end{definition}
+
+\begin{proposition}[Equivalence of the two orderings]
+The grossone-style unary magnitude indicator and the lexicographic layered magnitude indicator induce the same ordering on finite approximation sets. In other words, the unary form is a scalar encoding of the lexicographic hierarchy.
+\end{proposition}
+
+\begin{proof}
+If two lexicographic vectors first differ in component $j$, then the corresponding difference in
+\[
+\sum_{i=1}^{L}\Mag(\Dom(\front{i}))\,\Ginf^{-i+1}
+\]
+has leading nonzero term of order $\Ginf^{-j+1}$. That leading term determines the sign of the difference, and therefore the induced ordering agrees with the lexicographic one.
+\end{proof}
+
+\begin{remark}
+For theory, the lexicographic formulation is cleaner. For numerical work, a finite surrogate of the form
+\[
+\sum_{i=1}^{L}\varepsilon^{i-1}\mathcal I(\front{i})
+\]
+with $0<\varepsilon\ll 1$ is easier to implement.  In the magnitude case $\mathcal I(\front{i})=\Mag(\Dom(\front{i}))$; in the hypervolume case $\mathcal I(\front{i})=\HV(\front{i})$.  The practical effect is that dominated points still receive an ascent signal, but only after all higher-priority layers have been respected.  Thus deeper layers can be interpreted as providing a controlled \emph{pulling-back} contribution for dominated points, in the same broad spirit in which hypervolume-gradient methods produce improvement and distribution fields for approximation sets~\cite{emmerichdeutzbeume2007,deistetal2020}.
+\end{remark}
+
+
+\subsection{Magnitude gradients from projected hypervolume gradients}
+\label{subsec:magnitude-gradient-projections}
+
+The dominated-set magnitude also admits a useful gradient decomposition in arbitrary fixed dimension.  Let $B=\{b^{(1)},\dots,b^{(m)}\}\subset [0,\infty)^d$ and write $[d]:=\{1,\dots,d\}$.  For every nonempty coordinate subset $S\subseteq [d]$, let
+\[
+P_S:\R^d\to\R^{|S|}
+\]
+be the coordinate projection onto the coordinates in $S$, and let $P_S B:=\{P_S b:b\in B\}$ be the corresponding shadow of $B$.  Denote by $\HV_S(P_S B)$ the origin-anchored hypervolume of this shadow in $\R^{|S|}$.  The finite-dimensional magnitude expansion can then be written as
+\[
+\Mag_d(\Dom(B))
+=
+1+
+\sum_{\varnothing\neq S\subseteq [d]}
+2^{-|S|}\,\HV_S(P_S B).
+\]
+For $d=3$ this is exactly the decomposition into length, projected-area, and volume terms,
+\[
+\Mag_3(\Dom(B))
+=
+1+\frac12 L(B)+\frac14 A(B)+\frac18 V(B),
+\]
+where
+\[
+L(B)=\sum_{|S|=1}\HV_S(P_S B),
+\qquad
+A(B)=\sum_{|S|=2}\HV_S(P_S B),
+\qquad
+V(B)=\HV_{\{1,2,3\}}(B).
+\]
+
+On a differentiability chamber, the set-gradient with respect to the point $b^{(i)}$ is therefore obtained by differentiating the shadow hypervolumes and lifting their gradients back to the full coordinate space:
+\[
+\nabla_{b^{(i)}}\Mag_d(\Dom(B))
+=
+\sum_{\varnothing\neq S\subseteq [d]}
+2^{-|S|}\,
+P_S^{\top}
+\nabla_{P_S b^{(i)}}\HV_S(P_S B).
+\]
+Here $P_S^{\top}:\R^{|S|}\to\R^d$ denotes the adjoint insertion map, i.e. it places the shadow-gradient components into the coordinates in $S$ and fills the remaining coordinates with zeros.  In three dimensions this says that the magnitude gradient is a linear combination of the lifted gradients of the one-dimensional length shadows, the two-dimensional area shadows, and the three-dimensional hypervolume term:
+\[
+\nabla_{b^{(i)}}\Mag_3(\Dom(B))
+=
+\frac12\nabla_{b^{(i)}}L(B)
++
+\frac14\nabla_{b^{(i)}}A(B)
++
+\frac18\nabla_{b^{(i)}}V(B).
+\]
+For the whole labelled set, the gradient is the block vector
+\[
+\nabla_B\Mag_d(\Dom(B))
+=
+\bigl(
+\nabla_{b^{(1)}}\Mag_d(\Dom(B)),\dots,
+\nabla_{b^{(m)}}\Mag_d(\Dom(B))
+\bigr),
+\]
+and its scalar magnitude can be measured, for example, by the Frobenius norm
+\[
+\bigl\|\nabla_B\Mag_d(\Dom(B))\bigr\|_F
+=
+\left(
+\sum_{i=1}^{m}
+\bigl\|\nabla_{b^{(i)}}\Mag_d(\Dom(B))\bigr\|_2^2
+\right)^{1/2}.
+\]
+At nonsmooth configurations, where the active orthogonal-union geometry changes or where a point becomes tied in a projected shadow, the same formula is interpreted with corresponding Clarke subgradients or with the finite-difference approximation used in the numerical implementation.
+
+This representation is also computationally convenient.  If $T(m,k)$ denotes the time needed to compute a $k$-dimensional hypervolume gradient for $m$ points, then the projected formula requires
+\[
+\sum_{k=1}^{d}\binom{d}{k}T(m,k)
+\]
+work, since it evaluates one hypervolume-gradient computation for each of the $2^d-1$ nonempty coordinate shadows.  For fixed objective-space dimension $d$, this is only a constant-factor overhead relative to the ordinary $d$-dimensional hypervolume-gradient computation; the magnitude gradient is simply a linear composition of hypervolume gradients in dimensions $1,\dots,d$.  Thus, in the fixed-dimensional setting considered in this paper, computing the gradient of dominated-set magnitude has the same asymptotic time complexity in the number of points as computing the hypervolume gradient, up to this projection factor.
+
+For the layered magnitude indicator, this projected-gradient formula is applied layer by layer.  If $a^{(i)}$ belongs to layer $\front{\ell(i)}$ and the layer structure is fixed, then
+\[
+\nabla_{a^{(i)}}\mathcal L_{\varepsilon}^{\Mag}(A)
+=
+\varepsilon^{\ell(i)-1}
+\nabla_{a^{(i)}}\Mag_d\bigl(\Dom(\front{\ell(i)})\bigr),
+\]
+with the right-hand side again evaluated through the projected hypervolume gradients of the shadows of that layer.
+
+\section{Piecewise-smooth structure of layered indicators}
+The layered indicator is only piecewise smooth. There are two distinct sources of nonsmoothness.
+
+First, the layer structure itself changes combinatorially when two points exchange dominance status. Second, even within a fixed layer, the functions $X(B)$, $Y(B)$, and $\HV(B)$ are only piecewise smooth because different points become extremal or active in the staircase representation of the dominated region. Consequently, both layered hypervolume and layered magnitude, in lexicographic or finite-$\varepsilon$ scalar form, are naturally associated with nonsmooth optimization.  Magnitude has the additional nonsmooth maximum terms $X(B)$ and $Y(B)$, while hypervolume retains the active-staircase nonsmoothness of the orthogonal union.
+
+To keep the notation simple in the theoretical biobjective analysis, we write the magnitude surrogate as
+\[
+J^{\Mag}_{\varepsilon,\tau}(A):=\sum_{i=1}^{L}\varepsilon^{i-1}\Mag(\Dom(\front{i}))-\tau R_\sigma(A),
+\]
+and usually abbreviate it to $J_{\varepsilon,\tau}$.  The corresponding layered-hypervolume surrogate is obtained by replacing $\Mag(\Dom(\front{i}))$ by $\HV(\front{i})$.
+where $R_\sigma$ is a short-range repulsion term.
+
+\begin{definition}[Short-range repulsion]
+For $\sigma>0$ define
+\[
+R_\sigma(A):=\sum_{1\le i<j\le \mu}\exp\!\Bigl(-\frac{\|a^{(i)}-a^{(j)}\|_2^2}{\sigma^2}\Bigr).
+\]
+The term $-\tau R_\sigma(A)$ penalizes nearly coincident points and prevents exact duplicates in the numerical iterations.
+\end{definition}
+
+The repulsion term is not part of the theoretical layered indicator. It is introduced only as a numerical regularizer.
+
+\begin{proposition}[Local smoothness on fixed combinatorial strata]
+Fix $\mu$ and consider configurations $A=(a^{(1)},\dots,a^{(\mu)})\in(\R^2)^\mu$. On every region of configuration space on which
+\begin{enumerate}[label=(\roman*)]
+\item the membership of every point in every nondomination layer is fixed,
+\item for each layer, the points realizing $X(\front{\ell})$ and $Y(\front{\ell})$ are fixed, and
+\item the staircase combinatorics defining $\HV(\front{\ell})$ are fixed,
+\end{enumerate}
+the map $A\mapsto J_{\varepsilon,\tau}(A)$ is smooth.
+\end{proposition}
+
+\begin{proof}
+On such a region, each layer $\front{\ell}$ is represented by a fixed subset of indices. The functions $X(\front{\ell})$ and $Y(\front{\ell})$ are then simply coordinate projections of fixed points and are therefore affine. In two dimensions, once the staircase order of the active points is fixed, the anchored hypervolume $\HV(\front{\ell})$ is given by a fixed polynomial expression in the relevant coordinates. Hence $\Mag(\Dom(\front{\ell}))=1+\tfrac12(X+Y)+\tfrac14\HV$ is smooth on the region. The repulsion term is smooth everywhere, so the weighted sum defining $J_{\varepsilon,\tau}$ is smooth as well.
+\end{proof}
+
+The preceding proposition is a stratified smoothness statement. For actual estimates it is useful to record a chamberwise Lipschitz theorem that does \emph{not} require the active staircase combinatorics to remain fixed.
+
+\begin{theorem}[Lipschitz continuity on chambers with fixed layer membership]
+Fix $M>0$ and let $K_M:=([0,M]^2)^\mu$. Let $\mathcal I=(I_1,\dots,I_L)$ be an ordered partition of $\{1,\dots,\mu\}$ and let $\mathcal C_{\mathcal I}\subset K_M$ denote the set of configurations whose nondomination layers are exactly indexed by $I_1,\dots,I_L$. Then the restriction of $J_{\varepsilon,\tau}$ to $\mathcal C_{\mathcal I}$ is Lipschitz on $K_M\cap \mathcal C_{\mathcal I}$ with respect to the product $\ell^1$ norm
+\[
+\|A-B\|_{1,\mu}:=\sum_{i=1}^\mu \|a^{(i)}-b^{(i)}\|_1.
+\]
+More precisely, there exists a constant $L=L(M,\mu,\varepsilon,\tau,\sigma)$ such that
+\[
+|J_{\varepsilon,\tau}(A)-J_{\varepsilon,\tau}(B)|\le L\,\|A-B\|_{1,\mu}
+\qquad\text{for all }A,B\in K_M\cap \mathcal C_{\mathcal I}.
+\]
+\end{theorem}
+
+\begin{proof}
+We first estimate the dominated-set magnitude on a fixed labelled subset. Let $B=(b^{(1)},\dots,b^{(m)})$ and $C=(c^{(1)},\dots,c^{(m)})$ be two labelled $m$-point configurations in $([0,M]^2)^m$. Since the maximum is $1$-Lipschitz with respect to the $\ell^1$ norm,
+\[
+|X(B)-X(C)|\le \sum_{i=1}^m |b^{(i)}_1-c^{(i)}_1|,
+\qquad
+|Y(B)-Y(C)|\le \sum_{i=1}^m |b^{(i)}_2-c^{(i)}_2|.
+\]
+For the hypervolume term, write $Q(p):=[0,p_1]\times[0,p_2]$ for the anchored box generated by $p\in[0,M]^2$. Then
+\[
+\Dom(B)=\bigcup_{i=1}^m Q\bigl(b^{(i)}\bigr),
+\qquad
+\Dom(C)=\bigcup_{i=1}^m Q\bigl(c^{(i)}\bigr).
+\]
+The symmetric difference of the two unions is contained in the union of the individual symmetric differences, hence
+\[
+\bigl|\HV(B)-\HV(C)\bigr|
+\le \operatorname{area}\bigl(\Dom(B)\,\triangle\,\Dom(C)\bigr)
+\le \sum_{i=1}^m \operatorname{area}\Bigl(Q\bigl(b^{(i)}\bigr)\,\triangle\,Q\bigl(c^{(i)}\bigr)\Bigr).
+\]
+For each pair of anchored boxes one has
+\[
+\operatorname{area}\Bigl(Q\bigl(b^{(i)}\bigr)\,\triangle\,Q\bigl(c^{(i)}\bigr)\Bigr)
+\le M\,\bigl\|b^{(i)}-c^{(i)}\bigr\|_1,
+\]
+because changing the $x$-extent by $\delta_x$ and the $y$-extent by $\delta_y$ can alter the box only by vertical and horizontal strips of total area at most $M(|\delta_x|+|\delta_y|)$. Therefore
+\[
+\bigl|\HV(B)-\HV(C)\bigr|\le M\sum_{i=1}^m \bigl\|b^{(i)}-c^{(i)}\bigr\|_1.
+\]
+Combining the three estimates gives
+\[
+\bigl|\Mag(\Dom(B)) - \Mag(\Dom(C))\bigr|
+\le \Bigl(\frac12+\frac{M}{4}\Bigr)\sum_{i=1}^m \bigl\|b^{(i)}-c^{(i)}\bigr\|_1.
+\]
+Now let $A,B\in K_M\cap\mathcal C_{\mathcal I}$. Since $A$ and $B$ have the same layer membership pattern, the $\ell$-th layers are obtained from the same index set $I_\ell$ in both configurations. Applying the previous estimate layer by layer and summing with weights $\varepsilon^{\ell-1}$ yields a Lipschitz bound for the layered-magnitude part. Finally, the repulsion term $R_\sigma$ is smooth on the compact set $K_M$, hence Lipschitz there. Adding the two bounds proves the claim.
+\end{proof}
+
+\begin{proposition}[The hard-layer scalarization is not continuous across layer switches]
+Fix $\varepsilon>0$ and ignore the repulsion term for simplicity. Then the map $A\mapsto \sum_{\ell}\varepsilon^{\ell-1}\Mag(\Dom(\front{\ell}(A)))$ need not be continuous at configurations where the nondomination layers change.
+\end{proposition}
+
+\begin{proof}
+Consider the two-point configuration $A_0=\{a,b_0\}$ with
+\[
+a=(1,\tfrac12),
+\qquad
+b_0=(\tfrac{9}{10},\tfrac12).
+\]
+Here $a$ dominates $b_0$, so the first layer is $\{a\}$ and the second layer is $\{b_0\}$. Hence
+\[
+J_{\varepsilon,0}(A_0)=\Mag(\Dom(\{a\})) + \varepsilon\,\Mag(\Dom(\{b_0\})).
+\]
+For $\eta>0$ let
+\[
+b_\eta=(\tfrac{9}{10},\tfrac12+\eta),
+\qquad
+A_\eta=\{a,b_\eta\}.
+\]
+Then $a$ and $b_\eta$ are nondominated, so the whole configuration forms a single first layer and
+\[
+J_{\varepsilon,0}(A_\eta)=\Mag(\Dom(\{a,b_\eta\})).
+\]
+As $\eta\downarrow 0$, the dominated region of $\{a,b_\eta\}$ converges to the dominated region of $\{a\}$, and therefore
+\[
+\lim_{\eta\downarrow 0} J_{\varepsilon,0}(A_\eta)=\Mag(\Dom(\{a\})).
+\]
+Since $\Mag(\Dom(\{b_0\}))>0$, this limit is strictly smaller than $J_{\varepsilon,0}(A_0)$. Thus the hard-layer finite-$\varepsilon$ scalarization has a downward jump at $A_0$ and is not continuous there.
+\end{proof}
+
+\begin{remark}
+The theorem and counterexample together identify the real regularity picture. On chambers with fixed layer membership one has standard Lipschitz control and may invoke Clarke calculus in the usual way. Across layer-switching boundaries, however, the hard-layer finite-$\varepsilon$ scalarization can jump and therefore is not a locally Lipschitz function on the full configuration space. A full-space Clarke analysis is therefore unavailable for this hard-layer scalar surrogate; the discontinuity arises precisely from the abrupt reassignment of points between layers when dominance relations change.
+\end{remark}
+
+\section{Nonsmooth set-gradient ascent}
+Let $\Omega\subset \R^2$ be a closed feasible region in objective space and let $\Omega^\mu$ be the feasible set for approximation sets of size $\mu$. There are two closely related algorithmic viewpoints.
+
+The first is an \emph{idealized} projected Clarke-ascent step for a layered scalar surrogate $J_{\varepsilon,\tau}$, either the magnitude version or the hypervolume version.  The term set-gradient refers to the gradient, generalized gradient, or finite-difference direction with respect to all point coordinates of the approximation set.
+
+\begin{definition}[Ideal projected Clarke-ascent step]
+Given a current approximation set $A^k=(a^{k,(1)},\dots,a^{k,(\mu)})\in\Omega^\mu$, choose a generalized gradient
+\[
+g^k=(g^{k,(1)},\dots,g^{k,(\mu)})\in \clarke J_{\varepsilon,\tau}(A^k).
+\]
+For the normalized pointwise variant, define
+\[
+\widehat g^{k,(i)}=
+\begin{cases}
+\dfrac{g^{k,(i)}}{\|g^{k,(i)}\|_2}, & g^{k,(i)}\neq 0,\\[1ex]
+0, & g^{k,(i)}=0,
+\end{cases}
+\qquad i=1,\dots,\mu,
+\]
+and set
+\[
+\widehat g^k=(\widehat g^{k,(1)},\dots,\widehat g^{k,(\mu)}).
+\]
+The projected update is then
+\[
+A^{k+1}=\Pi_{\Omega^\mu}\bigl(A^k+\alpha_k \widehat g^k\bigr),
+\]
+where $\Pi_{\Omega^\mu}$ denotes Euclidean projection onto the feasible set and $\alpha_k>0$ is chosen either by backtracking or as a small diffusion step size.
+\end{definition}
+
+The second viewpoint is the one actually used in the small biobjective experiments: a projected \emph{finite-difference} set-gradient ascent scheme motivated by the preceding Clarke picture. In a full nonsmooth analysis one would work directly with the Clarke subdifferential. For the small experiments below, however, we use symmetric finite differences to construct a direction field, then normalize pointwise when indicated, and finally project back to the feasible set. In the curved-front experiment this pointwise normalization prevents a single large local gradient from dominating the motion of the whole approximation set and produces a small-step gradient-diffusion dynamics that is easier to visualize and numerically more robust in the presence of temporary near-collisions.
+
+For later reproducibility it is useful to separate the numerical core from the surrounding plotting or interactive code. The method used throughout the paper is summarized in Appendix~\ref{app:algorithm}, where we give commented pseudocode, explain all symbols before the algorithm, and provide a step-by-step walkthrough of one iteration.
+
+\medskip
+\noindent\textbf{Implemented finite-difference ascent scheme.}
+The numerical method associated with the figures is the following: start from a feasible configuration, evaluate the chosen layered surrogate, build a set-gradient direction field either by symmetric finite differences or by an explicit indicator-gradient routine, optionally normalize the direction pointwise, take a small ascent step, and project the result back to the feasible set. Appendix~\ref{app:algorithm} records this scheme in pseudocode and makes explicit the two viewpoints used in the paper: objective-space optimization, where the state variable is the approximation set itself, and decision-space optimization, where the layered objective is evaluated only after mapping the decision points into objective space.
+
+\subsection*{How the problem is solved numerically in practice}
+In the present computations the optimization variables are the coordinates of the $\mu$ points themselves. For objective-space examples the state variable is directly the approximation set $A\in\Omega^\mu$. For decision-space examples the state variable is a decision configuration $X=(x^{(1)},\dots,x^{(\mu)})$, the objective vectors are $F(x^{(i)})$, and the layered objective is evaluated after mapping the decision points into objective space. The generic implementation uses a fixed finite-difference radius $h$, a step size $\alpha$, optional pointwise normalization, and Euclidean projection onto the feasible set; see Appendix~\ref{app:algorithm} for the exact pseudocode and default constants used in the reference implementation.
+
+The small-step normalized variant is particularly convenient for visualization. In the numerical examples it first moves the points toward the first front and then lets the repulsion term separate them along that front. For nonlinear fronts, such as the quadratic ten-point example below, this produces a visible front-following diffusion and turns out to be quite robust.
+
+\section{A simple biobjective test problem}
+We consider the objective-space problem
+\[
+\max \{(F_1,F_2): (F_1,F_2)\in \Omega\},
+\qquad
+\Omega:=\{(F_1,F_2)\in [0,1]^2: F_1+F_2\le 1\}.
+\]
+The Pareto front is the line segment
+\[
+\mathcal{P}:=\{(F_1,F_2)\in [0,1]^2: F_1+F_2=1\}.
+\]
+Thus the interior of $\Omega$ consists of dominated objective vectors, while the upper boundary segment is the first nondominated front.
+
+For all experiments we use the same scalar surrogate and the same numerical parameters,
+\[
+\varepsilon=10^{-3},\qquad \tau=10^{-2},\qquad \sigma=0.06.
+\]
+The examples differ only in the approximation-set size $\mu$.
+
+\section{Numerical examples}
+The experiments start from interior points and apply the Clarke-motivated projected finite-difference ascent scheme to $J_{\varepsilon,\tau}$. In every case the final points lie on the Pareto front, so that the deeper layers disappear at the optimizer. This is consistent with the leading-order dominance of the first-front magnitude term.
+
+\begin{figure}[t]
+\centering
+\begin{tikzpicture}[scale=2.55, every node/.style={font=\small}]
+  \begin{scope}[xshift=0 cm]
+    \draw[very thin,gray!40] (0,0) grid[step=0.25] (1,1);
+    \fill[blue!4] (0,0) -- (1,0) -- (0,1) -- cycle;
+    \draw[thick] (0,0) -- (1,0) -- (0,1) -- cycle;
+    \draw[ultra thick,blue!70!black] (1,0) -- (0,1);
+    \node[above] at (0.5,1.02) {\(\mu=2\)};
+    \node[below] at (0.5,-0.23) {$F_1$};
+    \node[left] at (-0.05,0.5) {$F_2$};
+    \draw[gray!70, line width=0.45pt] (0.512,0.464) -- (0.625,0.375);
+    \draw[gray!62, line width=0.45pt] (0.625,0.375) -- (0.713,0.287);
+    \draw[blue!40, line width=0.45pt] (0.713,0.287) -- (0.784,0.216);
+    \draw[cyan!50!black, line width=0.45pt] (0.784,0.216) -- (0.841,0.159);
+    \draw[teal!60!black, line width=0.45pt] (0.841,0.159) -- (0.885,0.115);
+    \draw[green!50!black, line width=0.45pt] (0.885,0.115) -- (0.919,0.081);
+    \draw[orange!70!black, line width=0.45pt] (0.919,0.081) -- (0.943,0.057);
+    \draw[red!75!black, line width=0.45pt] (0.943,0.057) -- (0.961,0.039);
+    \draw[gray!70, line width=0.45pt] (0.144,0.812) -- (0.078,0.922);
+    \draw[gray!62, line width=0.45pt] (0.078,0.922) -- (0.008,0.992);
+    \draw[blue!40, line width=0.45pt] (0.008,0.992) -- (0.000,1.000);
+    \draw[cyan!50!black, line width=0.45pt] (0.000,1.000) -- (0.000,1.000);
+    \draw[teal!60!black, line width=0.45pt] (0.000,1.000) -- (0.000,1.000);
+    \draw[green!50!black, line width=0.45pt] (0.000,1.000) -- (0.000,1.000);
+    \draw[orange!70!black, line width=0.45pt] (0.000,1.000) -- (0.000,1.000);
+    \draw[red!75!black, line width=0.45pt] (0.000,1.000) -- (0.000,1.000);
+    \fill[gray!65] (0.512,0.464) circle (0.018);
+    \fill[gray!65] (0.144,0.812) circle (0.018);
+    \fill[red!80!black] (0.961,0.039) circle (0.022);
+    \fill[red!80!black] (0.000,1.000) circle (0.022);
+  \end{scope}
+  \begin{scope}[xshift=1.95 cm]
+    \draw[very thin,gray!40] (0,0) grid[step=0.25] (1,1);
+    \fill[blue!4] (0,0) -- (1,0) -- (0,1) -- cycle;
+    \draw[thick] (0,0) -- (1,0) -- (0,1) -- cycle;
+    \draw[ultra thick,blue!70!black] (1,0) -- (0,1);
+    \node[above] at (0.5,1.02) {\(\mu=3\)};
+    \node[below] at (0.5,-0.23) {$F_1$};
+    \node[left] at (-0.05,0.5) {$F_2$};
+    \draw[gray!70, line width=0.45pt] (0.512,0.464) -- (0.628,0.372);
+    \draw[gray!62, line width=0.45pt] (0.628,0.372) -- (0.737,0.263);
+    \draw[blue!40, line width=0.45pt] (0.737,0.263) -- (0.837,0.163);
+    \draw[cyan!50!black, line width=0.45pt] (0.837,0.163) -- (0.930,0.070);
+    \draw[teal!60!black, line width=0.45pt] (0.930,0.070) -- (1.000,0.000);
+    \draw[green!50!black, line width=0.45pt] (1.000,0.000) -- (1.000,0.000);
+    \draw[orange!70!black, line width=0.45pt] (1.000,0.000) -- (1.000,0.000);
+    \draw[red!75!black, line width=0.45pt] (1.000,0.000) -- (1.000,0.000);
+    \draw[gray!70, line width=0.45pt] (0.144,0.812) -- (0.077,0.923);
+    \draw[gray!62, line width=0.45pt] (0.077,0.923) -- (0.000,1.000);
+    \draw[blue!40, line width=0.45pt] (0.000,1.000) -- (0.000,1.000);
+    \draw[cyan!50!black, line width=0.45pt] (0.000,1.000) -- (0.000,1.000);
+    \draw[teal!60!black, line width=0.45pt] (0.000,1.000) -- (0.000,1.000);
+    \draw[green!50!black, line width=0.45pt] (0.000,1.000) -- (0.000,1.000);
+    \draw[orange!70!black, line width=0.45pt] (0.000,1.000) -- (0.000,1.000);
+    \draw[red!75!black, line width=0.45pt] (0.000,1.000) -- (0.000,1.000);
+    \draw[gray!70, line width=0.45pt] (0.312,0.291) -- (0.427,0.446);
+    \draw[gray!62, line width=0.45pt] (0.427,0.446) -- (0.435,0.565);
+    \draw[blue!40, line width=0.45pt] (0.435,0.565) -- (0.429,0.571);
+    \draw[cyan!50!black, line width=0.45pt] (0.429,0.571) -- (0.449,0.551);
+    \draw[teal!60!black, line width=0.45pt] (0.449,0.551) -- (0.474,0.526);
+    \draw[green!50!black, line width=0.45pt] (0.474,0.526) -- (0.489,0.511);
+    \draw[orange!70!black, line width=0.45pt] (0.489,0.511) -- (0.495,0.505);
+    \draw[red!75!black, line width=0.45pt] (0.495,0.505) -- (0.498,0.502);
+    \fill[gray!65] (0.512,0.464) circle (0.018);
+    \fill[gray!65] (0.144,0.812) circle (0.018);
+    \fill[gray!65] (0.312,0.291) circle (0.018);
+    \fill[red!80!black] (1.000,0.000) circle (0.022);
+    \fill[red!80!black] (0.000,1.000) circle (0.022);
+    \fill[red!80!black] (0.498,0.502) circle (0.022);
+  \end{scope}
+  \begin{scope}[xshift=3.9 cm]
+    \draw[very thin,gray!40] (0,0) grid[step=0.25] (1,1);
+    \fill[blue!4] (0,0) -- (1,0) -- (0,1) -- cycle;
+    \draw[thick] (0,0) -- (1,0) -- (0,1) -- cycle;
+    \draw[ultra thick,blue!70!black] (1,0) -- (0,1);
+    \node[above] at (0.5,1.02) {\(\mu=4\)};
+    \node[below] at (0.5,-0.23) {$F_1$};
+    \node[left] at (-0.05,0.5) {$F_2$};
+    \draw[gray!70, line width=0.45pt] (0.512,0.464) -- (0.520,0.480);
+    \draw[gray!62, line width=0.45pt] (0.520,0.480) -- (0.569,0.431);
+    \draw[blue!40, line width=0.45pt] (0.569,0.431) -- (0.617,0.383);
+    \draw[cyan!50!black, line width=0.45pt] (0.617,0.383) -- (0.631,0.369);
+    \draw[teal!60!black, line width=0.45pt] (0.631,0.369) -- (0.635,0.365);
+    \draw[green!50!black, line width=0.45pt] (0.635,0.365) -- (0.637,0.363);
+    \draw[orange!70!black, line width=0.45pt] (0.637,0.363) -- (0.637,0.363);
+    \draw[red!75!black, line width=0.45pt] (0.637,0.363) -- (0.638,0.362);
+    \draw[gray!70, line width=0.45pt] (0.144,0.812) -- (0.073,0.927);
+    \draw[gray!62, line width=0.45pt] (0.073,0.927) -- (0.000,1.000);
+    \draw[blue!40, line width=0.45pt] (0.000,1.000) -- (0.000,1.000);
+    \draw[cyan!50!black, line width=0.45pt] (0.000,1.000) -- (0.000,1.000);
+    \draw[teal!60!black, line width=0.45pt] (0.000,1.000) -- (0.000,1.000);
+    \draw[green!50!black, line width=0.45pt] (0.000,1.000) -- (0.000,1.000);
+    \draw[orange!70!black, line width=0.45pt] (0.000,1.000) -- (0.000,1.000);
+    \draw[red!75!black, line width=0.45pt] (0.000,1.000) -- (0.000,1.000);
+    \draw[gray!70, line width=0.45pt] (0.312,0.291) -- (0.373,0.410);
+    \draw[gray!62, line width=0.45pt] (0.373,0.410) -- (0.382,0.600);
+    \draw[blue!40, line width=0.45pt] (0.382,0.600) -- (0.360,0.640);
+    \draw[cyan!50!black, line width=0.45pt] (0.360,0.640) -- (0.357,0.643);
+    \draw[teal!60!black, line width=0.45pt] (0.357,0.643) -- (0.359,0.641);
+    \draw[green!50!black, line width=0.45pt] (0.359,0.641) -- (0.360,0.640);
+    \draw[orange!70!black, line width=0.45pt] (0.360,0.640) -- (0.361,0.639);
+    \draw[red!75!black, line width=0.45pt] (0.361,0.639) -- (0.361,0.639);
+    \draw[gray!70, line width=0.45pt] (0.828,0.071) -- (0.968,0.032);
+    \draw[gray!62, line width=0.45pt] (0.968,0.032) -- (1.000,0.000);
+    \draw[blue!40, line width=0.45pt] (1.000,0.000) -- (1.000,0.000);
+    \draw[cyan!50!black, line width=0.45pt] (1.000,0.000) -- (1.000,0.000);
+    \draw[teal!60!black, line width=0.45pt] (1.000,0.000) -- (1.000,0.000);
+    \draw[green!50!black, line width=0.45pt] (1.000,0.000) -- (1.000,0.000);
+    \draw[orange!70!black, line width=0.45pt] (1.000,0.000) -- (1.000,0.000);
+    \draw[red!75!black, line width=0.45pt] (1.000,0.000) -- (1.000,0.000);
+    \fill[gray!65] (0.512,0.464) circle (0.018);
+    \fill[gray!65] (0.144,0.812) circle (0.018);
+    \fill[gray!65] (0.312,0.291) circle (0.018);
+    \fill[gray!65] (0.828,0.071) circle (0.018);
+    \fill[red!80!black] (0.638,0.362) circle (0.022);
+    \fill[red!80!black] (0.000,1.000) circle (0.022);
+    \fill[red!80!black] (0.361,0.639) circle (0.022);
+    \fill[red!80!black] (1.000,0.000) circle (0.022);
+  \end{scope}
+\end{tikzpicture}
+\caption{Projected-diffusion paths for layered magnitude on the biobjective triangle problem, run twice as long as in the previous version. Because this test problem is posed directly in objective coordinates, the decision space and objective space coincide, so each panel simultaneously visualizes both flows. The blue segment is the Pareto front; gray points indicate the initial approximation set and red points the last plotted iterates.}
+\label{fig:three-examples}
+\end{figure}
+
+\begin{example}[Approximation set of size $2$]
+Starting from two interior points, the finite-difference ascent scheme moves the configuration to the two extreme Pareto points
+\[
+(0,1),\qquad (1,0).
+\]
+At the optimizer all points belong to the first nondominated layer, and
+\[
+\HV=0,
+\qquad
+\Mag=1+\frac{1+1}{2}+\frac{0}{4}=2.
+\]
+Thus the leading layer already captures the whole indicator.
+\end{example}
+
+\begin{example}[Approximation set of size $3$]
+For $\mu=3$, the method converges numerically to a nearly symmetric front configuration,
+\[
+(0,1),\qquad (0.489,0.511),\qquad (1,0).
+\]
+Again the entire approximation set lies on the first front. The dominated area is approximately
+\[
+\HV\approx 0.24988,
+\]
+so the magnitude of the first layer is approximately
+\[
+\Mag\approx 2.06247.
+\]
+The repulsion term prevents the middle point from collapsing onto one of the two extremes.
+\end{example}
+
+\begin{example}[Approximation set of size $4$]
+For $\mu=4$, we choose an interior nondominated start on the line $F_1+F_2=0.65$. The method then converges numerically to a four-point front configuration close to
+\[
+(0,1),\qquad (0.338,0.662),\qquad (0.662,0.338),\qquad (1,0).
+\]
+Here the entire approximation set lies on the first front at the end of the run. The dominated area is approximately
+\[
+\HV\approx 0.33231,
+\]
+and the corresponding magnitude is approximately
+\[
+\Mag\approx 2.08308.
+\]
+This is close to the evenly spaced four-point front distribution suggested by symmetry.
+\end{example}
+
+
+\begin{figure}[t]
+\centering
+\begin{tikzpicture}[scale=9.0, every node/.style={font=\scriptsize}]
+  \draw[very thin,gray!30] (0,0) grid[step=0.1] (1,1);
+  \fill[blue!4] (0,0) -- (1,0) -- (0,1) -- cycle;
+  \draw[thick] (0,0) -- (1,0) -- (0,1) -- cycle;
+  \draw[ultra thick,blue!70!black] (1,0) -- (0,1);
+  \foreach \x/\lab in {0/0,0.5/0.5,1/1} {\draw[thin,gray!65] (\x,0) -- +(0,-0.014); \node[below,font=\scriptsize] at (\x,-0.022) {\lab};}
+  \foreach \y/\lab in {0/0,0.5/0.5,1/1} {\draw[thin,gray!65] (0,\y) -- +(-0.014,0); \node[left,font=\scriptsize] at (-0.022,\y) {\lab};}
+  \node[above] at (0.5,1.03) {$\mu=10$ with projected diffusion paths};
+  \draw[gray!70, line width=0.35pt] (0.020,0.680) -- (0.024,0.840);
+  \draw[gray!62, line width=0.35pt] (0.024,0.840) -- (0.016,0.984);
+  \draw[blue!40, line width=0.35pt] (0.016,0.984) -- (0.000,1.000);
+  \draw[cyan!50!black, line width=0.35pt] (0.000,1.000) -- (0.000,1.000);
+  \draw[teal!60!black, line width=0.35pt] (0.000,1.000) -- (0.000,1.000);
+  \draw[green!50!black, line width=0.35pt] (0.000,1.000) -- (0.000,1.000);
+  \draw[orange!70!black, line width=0.35pt] (0.000,1.000) -- (0.000,1.000);
+  \draw[red!75!black, line width=0.35pt] (0.000,1.000) -- (0.000,1.000);
+  \draw[gray!70, line width=0.35pt] (0.093,0.607) -- (0.158,0.752);
+  \draw[gray!62, line width=0.35pt] (0.158,0.752) -- (0.182,0.818);
+  \draw[blue!40, line width=0.35pt] (0.182,0.818) -- (0.173,0.827);
+  \draw[cyan!50!black, line width=0.35pt] (0.173,0.827) -- (0.172,0.828);
+  \draw[teal!60!black, line width=0.35pt] (0.172,0.828) -- (0.171,0.829);
+  \draw[green!50!black, line width=0.35pt] (0.171,0.829) -- (0.171,0.829);
+  \draw[orange!70!black, line width=0.35pt] (0.171,0.829) -- (0.171,0.829);
+  \draw[red!75!black, line width=0.35pt] (0.171,0.829) -- (0.171,0.829);
+  \draw[gray!70, line width=0.35pt] (0.167,0.533) -- (0.254,0.667);
+  \draw[gray!62, line width=0.35pt] (0.254,0.667) -- (0.283,0.717);
+  \draw[blue!40, line width=0.35pt] (0.283,0.717) -- (0.278,0.722);
+  \draw[cyan!50!black, line width=0.35pt] (0.278,0.722) -- (0.277,0.723);
+  \draw[teal!60!black, line width=0.35pt] (0.277,0.723) -- (0.277,0.723);
+  \draw[green!50!black, line width=0.35pt] (0.277,0.723) -- (0.277,0.723);
+  \draw[orange!70!black, line width=0.35pt] (0.277,0.723) -- (0.277,0.723);
+  \draw[red!75!black, line width=0.35pt] (0.277,0.723) -- (0.277,0.723);
+  \draw[gray!70, line width=0.35pt] (0.240,0.460) -- (0.340,0.584);
+  \draw[gray!62, line width=0.35pt] (0.340,0.584) -- (0.372,0.628);
+  \draw[blue!40, line width=0.35pt] (0.372,0.628) -- (0.370,0.630);
+  \draw[cyan!50!black, line width=0.35pt] (0.370,0.630) -- (0.369,0.631);
+  \draw[teal!60!black, line width=0.35pt] (0.369,0.631) -- (0.369,0.631);
+  \draw[green!50!black, line width=0.35pt] (0.369,0.631) -- (0.369,0.631);
+  \draw[orange!70!black, line width=0.35pt] (0.369,0.631) -- (0.369,0.631);
+  \draw[red!75!black, line width=0.35pt] (0.369,0.631) -- (0.369,0.631);
+  \draw[gray!70, line width=0.35pt] (0.313,0.387) -- (0.423,0.503);
+  \draw[gray!62, line width=0.35pt] (0.423,0.503) -- (0.458,0.542);
+  \draw[blue!40, line width=0.35pt] (0.458,0.542) -- (0.457,0.543);
+  \draw[cyan!50!black, line width=0.35pt] (0.457,0.543) -- (0.457,0.543);
+  \draw[teal!60!black, line width=0.35pt] (0.457,0.543) -- (0.457,0.543);
+  \draw[green!50!black, line width=0.35pt] (0.457,0.543) -- (0.457,0.543);
+  \draw[orange!70!black, line width=0.35pt] (0.457,0.543) -- (0.457,0.543);
+  \draw[red!75!black, line width=0.35pt] (0.457,0.543) -- (0.457,0.543);
+  \draw[gray!70, line width=0.35pt] (0.387,0.313) -- (0.503,0.423);
+  \draw[gray!62, line width=0.35pt] (0.503,0.423) -- (0.542,0.458);
+  \draw[blue!40, line width=0.35pt] (0.542,0.458) -- (0.543,0.457);
+  \draw[cyan!50!black, line width=0.35pt] (0.543,0.457) -- (0.543,0.457);
+  \draw[teal!60!black, line width=0.35pt] (0.543,0.457) -- (0.543,0.457);
+  \draw[green!50!black, line width=0.35pt] (0.543,0.457) -- (0.543,0.457);
+  \draw[orange!70!black, line width=0.35pt] (0.543,0.457) -- (0.543,0.457);
+  \draw[red!75!black, line width=0.35pt] (0.543,0.457) -- (0.543,0.457);
+  \draw[gray!70, line width=0.35pt] (0.460,0.240) -- (0.584,0.340);
+  \draw[gray!62, line width=0.35pt] (0.584,0.340) -- (0.628,0.372);
+  \draw[blue!40, line width=0.35pt] (0.628,0.372) -- (0.630,0.370);
+  \draw[cyan!50!black, line width=0.35pt] (0.630,0.370) -- (0.631,0.369);
+  \draw[teal!60!black, line width=0.35pt] (0.631,0.369) -- (0.631,0.369);
+  \draw[green!50!black, line width=0.35pt] (0.631,0.369) -- (0.631,0.369);
+  \draw[orange!70!black, line width=0.35pt] (0.631,0.369) -- (0.631,0.369);
+  \draw[red!75!black, line width=0.35pt] (0.631,0.369) -- (0.631,0.369);
+  \draw[gray!70, line width=0.35pt] (0.533,0.167) -- (0.667,0.254);
+  \draw[gray!62, line width=0.35pt] (0.667,0.254) -- (0.717,0.283);
+  \draw[blue!40, line width=0.35pt] (0.717,0.283) -- (0.722,0.278);
+  \draw[cyan!50!black, line width=0.35pt] (0.722,0.278) -- (0.723,0.277);
+  \draw[teal!60!black, line width=0.35pt] (0.723,0.277) -- (0.723,0.277);
+  \draw[green!50!black, line width=0.35pt] (0.723,0.277) -- (0.723,0.277);
+  \draw[orange!70!black, line width=0.35pt] (0.723,0.277) -- (0.723,0.277);
+  \draw[red!75!black, line width=0.35pt] (0.723,0.277) -- (0.723,0.277);
+  \draw[gray!70, line width=0.35pt] (0.607,0.093) -- (0.752,0.158);
+  \draw[gray!62, line width=0.35pt] (0.752,0.158) -- (0.818,0.182);
+  \draw[blue!40, line width=0.35pt] (0.818,0.182) -- (0.827,0.173);
+  \draw[cyan!50!black, line width=0.35pt] (0.827,0.173) -- (0.828,0.172);
+  \draw[teal!60!black, line width=0.35pt] (0.828,0.172) -- (0.829,0.171);
+  \draw[green!50!black, line width=0.35pt] (0.829,0.171) -- (0.829,0.171);
+  \draw[orange!70!black, line width=0.35pt] (0.829,0.171) -- (0.829,0.171);
+  \draw[red!75!black, line width=0.35pt] (0.829,0.171) -- (0.829,0.171);
+  \draw[gray!70, line width=0.35pt] (0.680,0.020) -- (0.840,0.024);
+  \draw[gray!62, line width=0.35pt] (0.840,0.024) -- (0.984,0.016);
+  \draw[blue!40, line width=0.35pt] (0.984,0.016) -- (1.000,0.000);
+  \draw[cyan!50!black, line width=0.35pt] (1.000,0.000) -- (1.000,0.000);
+  \draw[teal!60!black, line width=0.35pt] (1.000,0.000) -- (1.000,0.000);
+  \draw[green!50!black, line width=0.35pt] (1.000,0.000) -- (1.000,0.000);
+  \draw[orange!70!black, line width=0.35pt] (1.000,0.000) -- (1.000,0.000);
+  \draw[red!75!black, line width=0.35pt] (1.000,0.000) -- (1.000,0.000);
+  \fill[gray!65] (0.020,0.680) circle (0.0075);
+  \fill[gray!65] (0.093,0.607) circle (0.0075);
+  \fill[gray!65] (0.167,0.533) circle (0.0075);
+  \fill[gray!65] (0.240,0.460) circle (0.0075);
+  \fill[gray!65] (0.313,0.387) circle (0.0075);
+  \fill[gray!65] (0.387,0.313) circle (0.0075);
+  \fill[gray!65] (0.460,0.240) circle (0.0075);
+  \fill[gray!65] (0.533,0.167) circle (0.0075);
+  \fill[gray!65] (0.607,0.093) circle (0.0075);
+  \fill[gray!65] (0.680,0.020) circle (0.0075);
+  \fill[red!80!black] (0.000,1.000) circle (0.0095);
+  \fill[red!80!black] (0.171,0.829) circle (0.0095);
+  \fill[red!80!black] (0.277,0.723) circle (0.0095);
+  \fill[red!80!black] (0.369,0.631) circle (0.0095);
+  \fill[red!80!black] (0.457,0.543) circle (0.0095);
+  \fill[red!80!black] (0.543,0.457) circle (0.0095);
+  \fill[red!80!black] (0.631,0.369) circle (0.0095);
+  \fill[red!80!black] (0.723,0.277) circle (0.0095);
+  \fill[red!80!black] (0.829,0.171) circle (0.0095);
+  \fill[red!80!black] (1.000,0.000) circle (0.0095);
+  \node[below] at (0.5,-0.07) {$F_1$};
+  \node[rotate=90] at (-0.09,0.5) {$F_2$};
+\end{tikzpicture}
+\caption{Projected diffusion paths for the $10$-point triangle example with the same small step size but twice as many iterations. Since the triangle problem is posed directly in objective coordinates, the picture may again be read simultaneously as a decision-space and objective-space flow. The blue segment is the Pareto front, and the red points are the last plotted iterates.}
+\label{fig:ten-point-paths}
+\end{figure}
+
+\begin{example}[Approximation set of size $10$]
+For $\mu=10$, we start from ten mutually nondominated interior points on the line $F_1+F_2=0.7$. The finite-difference ascent scheme moves the entire configuration to the Pareto front while preserving separation between nearby points. The final points are numerically close to
+\[
+(0,1),\ (0.126,0.874),\ (0.244,0.756),\ (0.353,0.647),\ (0.452,0.548),
+\]
+\[
+(0.548,0.452),\ (0.647,0.353),\ (0.756,0.244),\ (0.874,0.126),\ (1,0).
+\]
+The corresponding first-layer values are approximately
+\[
+\HV\approx 0.44392,
+\qquad
+\Mag\approx 2.11098.
+\]
+Figure~\ref{fig:ten-point-paths} visualizes the projected diffusion paths after the longer run. In contrast to the smaller examples, this figure makes visible how the repulsion term acts only after the dominant first-layer magnitude term has already driven the points to the Pareto front.
+\end{example}
+
+
+\subsection{A summed quadratic biobjective problem with ten points}
+
+We next consider a smooth biobjective optimization problem in the decision space
+\[
+\Omega=[-2,2]^2.
+\]
+For $x=(x_1,x_2)\in\Omega$, define the component functions
+\[
+f_1(x)=\frac12\bigl(1-(x_1-1)^2\bigr)+\frac12\bigl(1-(x_2-1)^2\bigr),
+\]
+\[
+f_2(x)=\frac12\bigl(1-x_1^2\bigr)+\frac12\bigl(1-x_2^2\bigr),
+\]
+and write the corresponding objective vector value as $F(x)=(F_1,F_2)=(f_1(x),f_2(x))$.
+Thus each coordinate contributes a term favoring $x_i=1$ in the first objective and $x_i=0$ in the second. The problem is smooth in decision space, but its efficient set and Pareto front can still be described explicitly.
+
+\begin{proposition}
+For the above problem, the efficient set is
+\[
+\mathcal E=\{(t,t):\,t\in[0,1]\},
+\]
+and the Pareto front is the curve
+\[
+\mathcal F
+=
+\bigl\{(2t-t^2,\ 1-t^2):\, t\in[0,1]\bigr\}.
+\]
+\end{proposition}
+
+\begin{proof}
+If $x_i<0$, then increasing $x_i$ toward $0$ improves both
+\[
+\frac12(1-(x_i-1)^2)
+\qquad\text{and}\qquad
+\frac12(1-x_i^2),
+\]
+so no efficient point can have $x_i<0$. Likewise, if $x_i>1$, then decreasing $x_i$ toward $1$ improves both objectives, so no efficient point can have $x_i>1$. Hence every efficient point lies in $[0,1]^2$.
+
+Now let $x=(x_1,x_2)\in[0,1]^2$, and set
+\[
+t:=\frac{x_1+x_2}{2}.
+\]
+Then
+\[
+f_2(x)=1-\frac{x_1^2+x_2^2}{2},
+\qquad
+f_1(x)=x_1+x_2-\frac{x_1^2+x_2^2}{2}.
+\]
+Since
+\[
+x_1^2+x_2^2 \ge 2t^2,
+\]
+with equality if and only if $x_1=x_2=t$, it follows that
+\[
+f_2(t,t)\ge f_2(x),
+\qquad
+f_1(t,t)\ge f_1(x),
+\]
+and the inequalities are strict unless $x_1=x_2$. Thus every off-diagonal point in $[0,1]^2$ is dominated by its diagonal average. Hence the efficient set is exactly the stated diagonal segment, and the stated front formula follows by substitution.
+\end{proof}
+
+This example is useful because it is smooth in decision space, has a one-dimensional Pareto set, and still makes the nonsmooth layered optimization visible through changes in the active dominated-set geometry. In the previous $10$-point example, the paths appeared almost straight because the initial points were chosen on a nearly parallel interior line and the update used pointwise normalized small steps. To make the nonlinear geometry more visible, we now choose a perturbed interior starting set.
+
+\begin{example}[Perturbed ten-point gradient diffusion]
+We initialize ten points in decision space by
+\[
+(0.10,0.74),\ (0.18,0.49),\ (0.12,0.61),\ (0.33,0.58),\ (0.46,0.28),
+\]
+\[
+(0.41,0.45),\ (0.63,0.12),\ (0.57,0.26),\ (0.71,0.33),\ (0.82,0.08).
+\]
+All these points are feasible, mutually distinct, and lie away from the efficient diagonal. We then apply the implemented projected finite-difference ascent scheme in decision space: the layered objective is evaluated in objective space after mapping the decision points through $F$, symmetric finite differences are taken with respect to the decision coordinates, the resulting directions are normalized separately for each point, and small projected steps are taken in the box $[0,1]^2$. This tighter projection is sufficient here because Proposition~1 shows that all efficient points lie in $[0,1]^2$, so clipping the run to this box keeps the iterates in the relevant region while avoiding excursions that would only clutter the figure. In the implementation used for this example we employ the setting
+\[
+\quad \alpha=0.015,\quad \varepsilon=10^{-3},\qquad \tau=2\cdot 10^{-4},\quad \sigma=0.03,\quad h=10^{-5},
+\]
+which is an example-specific override of the generic defaults listed in Appendix~\ref{app:algorithm}. Thus the numerical scheme should be read as a Clarke-motivated finite-difference diffusion rather than as a full projected subgradient method with convergence guarantees. Whenever the geometry is smooth, it reduces to an ordinary small-step ascent in decision space. At points where the active dominated-set geometry changes, the Clarke viewpoint remains the appropriate first-order interpretation.
+\end{example}
+
+\begin{figure}[t]
+\centering
+\begin{minipage}{0.48\textwidth}
+\centering
+\begin{tikzpicture}[scale=4.9, every node/.style={font=\scriptsize}]
+  \draw[very thin,gray!25] (0.000,0.000) grid[step=0.1] (1.000,1.000);
+  \draw[thick] (0.000,0.000) rectangle (1.000,1.000);
+  \draw[ultra thick,blue!70!black] (0.000,0.000) -- (1.000,1.000);
+  \foreach \x/\lab in {0/0,1/1} {\draw[thin,gray!65] (\x,0) -- +(0,-0.014); \node[below,font=\scriptsize] at (\x,-0.022) {\lab};}
+  \foreach \y/\lab in {0/0,1/1} {\draw[thin,gray!65] (0,\y) -- +(-0.014,0); \node[left,font=\scriptsize] at (-0.022,\y) {\lab};}
+  \node[above] at (0.5,1.03) {decision space};
+  \draw[gray!70, line width=0.56pt, -{Latex[length=1.05mm,width=0.75mm]}] (0.100,0.740) -- (0.277,0.837);
+  \draw[gray!62, line width=0.56pt, -{Latex[length=1.05mm,width=0.75mm]}] (0.277,0.837) -- (0.493,0.894);
+  \draw[blue!40, line width=0.56pt, -{Latex[length=1.05mm,width=0.75mm]}] (0.493,0.894) -- (0.696,0.939);
+  \draw[cyan!50!black, line width=0.56pt, -{Latex[length=1.05mm,width=0.75mm]}] (0.696,0.939) -- (0.844,0.845);
+  \draw[teal!60!black, line width=0.56pt, -{Latex[length=1.05mm,width=0.75mm]}] (0.844,0.845) -- (0.848,0.848);
+  \draw[green!50!black, line width=0.56pt, -{Latex[length=1.05mm,width=0.75mm]}] (0.848,0.848) -- (0.845,0.845);
+  \draw[orange!70!black, line width=0.56pt, -{Latex[length=1.05mm,width=0.75mm]}] (0.845,0.845) -- (0.848,0.848);
+  \draw[red!75!black, line width=0.56pt, -{Latex[length=1.05mm,width=0.75mm]}] (0.848,0.848) -- (0.845,0.845);
+  \draw[gray!70, line width=0.56pt, -{Latex[length=1.05mm,width=0.75mm]}] (0.180,0.490) -- (0.106,0.277);
+  \draw[gray!62, line width=0.56pt, -{Latex[length=1.05mm,width=0.75mm]}] (0.106,0.277) -- (0.035,0.064);
+  \draw[blue!40, line width=0.56pt, -{Latex[length=1.05mm,width=0.75mm]}] (0.035,0.064) -- (0.013,0.013);
+  \draw[cyan!50!black, line width=0.56pt, -{Latex[length=1.05mm,width=0.75mm]}] (0.013,0.013) -- (0.017,0.017);
+  \draw[teal!60!black, line width=0.56pt, -{Latex[length=1.05mm,width=0.75mm]}] (0.017,0.017) -- (0.013,0.013);
+  \draw[green!50!black, line width=0.56pt, -{Latex[length=1.05mm,width=0.75mm]}] (0.013,0.013) -- (0.017,0.017);
+  \draw[orange!70!black, line width=0.56pt, -{Latex[length=1.05mm,width=0.75mm]}] (0.017,0.017) -- (0.013,0.013);
+  \draw[red!75!black, line width=0.56pt, -{Latex[length=1.05mm,width=0.75mm]}] (0.013,0.013) -- (0.017,0.017);
+  \draw[gray!70, line width=0.56pt, -{Latex[length=1.05mm,width=0.75mm]}] (0.120,0.610) -- (0.000,0.446);
+  \draw[gray!62, line width=0.56pt, -{Latex[length=1.05mm,width=0.75mm]}] (0.000,0.446) -- (0.000,0.263);
+  \draw[blue!40, line width=0.56pt, -{Latex[length=1.05mm,width=0.75mm]}] (0.000,0.263) -- (0.000,0.052);
+  \draw[cyan!50!black, line width=0.56pt, -{Latex[length=1.05mm,width=0.75mm]}] (0.000,0.052) -- (0.000,0.079);
+  \draw[teal!60!black, line width=0.56pt, -{Latex[length=1.05mm,width=0.75mm]}] (0.000,0.079) -- (0.000,0.066);
+  \draw[green!50!black, line width=0.56pt, -{Latex[length=1.05mm,width=0.75mm]}] (0.000,0.066) -- (0.000,0.049);
+  \draw[orange!70!black, line width=0.56pt, -{Latex[length=1.05mm,width=0.75mm]}] (0.000,0.049) -- (0.000,0.040);
+  \draw[red!75!black, line width=0.56pt, -{Latex[length=1.05mm,width=0.75mm]}] (0.000,0.040) -- (0.000,0.027);
+  \draw[gray!70, line width=0.56pt, -{Latex[length=1.05mm,width=0.75mm]}] (0.330,0.580) -- (0.550,0.586);
+  \draw[gray!62, line width=0.56pt, -{Latex[length=1.05mm,width=0.75mm]}] (0.550,0.586) -- (0.678,0.678);
+  \draw[blue!40, line width=0.56pt, -{Latex[length=1.05mm,width=0.75mm]}] (0.678,0.678) -- (0.787,0.787);
+  \draw[cyan!50!black, line width=0.56pt, -{Latex[length=1.05mm,width=0.75mm]}] (0.787,0.787) -- (0.734,0.734);
+  \draw[teal!60!black, line width=0.56pt, -{Latex[length=1.05mm,width=0.75mm]}] (0.734,0.734) -- (0.731,0.731);
+  \draw[green!50!black, line width=0.56pt, -{Latex[length=1.05mm,width=0.75mm]}] (0.731,0.731) -- (0.734,0.734);
+  \draw[orange!70!black, line width=0.56pt, -{Latex[length=1.05mm,width=0.75mm]}] (0.734,0.734) -- (0.731,0.731);
+  \draw[red!75!black, line width=0.56pt, -{Latex[length=1.05mm,width=0.75mm]}] (0.731,0.731) -- (0.734,0.734);
+  \draw[gray!70, line width=0.56pt, -{Latex[length=1.05mm,width=0.75mm]}] (0.460,0.280) -- (0.300,0.300);
+  \draw[gray!62, line width=0.56pt, -{Latex[length=1.05mm,width=0.75mm]}] (0.300,0.300) -- (0.205,0.205);
+  \draw[blue!40, line width=0.56pt, -{Latex[length=1.05mm,width=0.75mm]}] (0.205,0.205) -- (0.173,0.173);
+  \draw[cyan!50!black, line width=0.56pt, -{Latex[length=1.05mm,width=0.75mm]}] (0.173,0.173) -- (0.175,0.175);
+  \draw[teal!60!black, line width=0.56pt, -{Latex[length=1.05mm,width=0.75mm]}] (0.175,0.175) -- (0.178,0.178);
+  \draw[green!50!black, line width=0.56pt, -{Latex[length=1.05mm,width=0.75mm]}] (0.178,0.178) -- (0.175,0.175);
+  \draw[orange!70!black, line width=0.56pt, -{Latex[length=1.05mm,width=0.75mm]}] (0.175,0.175) -- (0.178,0.178);
+  \draw[red!75!black, line width=0.56pt, -{Latex[length=1.05mm,width=0.75mm]}] (0.178,0.178) -- (0.175,0.175);
+  \draw[gray!70, line width=0.56pt, -{Latex[length=1.05mm,width=0.75mm]}] (0.410,0.450) -- (0.404,0.404);
+  \draw[gray!62, line width=0.56pt, -{Latex[length=1.05mm,width=0.75mm]}] (0.404,0.404) -- (0.436,0.436);
+  \draw[blue!40, line width=0.56pt, -{Latex[length=1.05mm,width=0.75mm]}] (0.436,0.436) -- (0.524,0.524);
+  \draw[cyan!50!black, line width=0.56pt, -{Latex[length=1.05mm,width=0.75mm]}] (0.524,0.524) -- (0.521,0.521);
+  \draw[teal!60!black, line width=0.56pt, -{Latex[length=1.05mm,width=0.75mm]}] (0.521,0.521) -- (0.517,0.517);
+  \draw[green!50!black, line width=0.56pt, -{Latex[length=1.05mm,width=0.75mm]}] (0.517,0.517) -- (0.521,0.521);
+  \draw[orange!70!black, line width=0.56pt, -{Latex[length=1.05mm,width=0.75mm]}] (0.521,0.521) -- (0.517,0.517);
+  \draw[red!75!black, line width=0.56pt, -{Latex[length=1.05mm,width=0.75mm]}] (0.517,0.517) -- (0.521,0.521);
+  \draw[gray!70, line width=0.56pt, -{Latex[length=1.05mm,width=0.75mm]}] (0.630,0.120) -- (0.577,0.176);
+  \draw[gray!62, line width=0.56pt, -{Latex[length=1.05mm,width=0.75mm]}] (0.577,0.176) -- (0.388,0.266);
+  \draw[blue!40, line width=0.56pt, -{Latex[length=1.05mm,width=0.75mm]}] (0.388,0.266) -- (0.301,0.301);
+  \draw[cyan!50!black, line width=0.56pt, -{Latex[length=1.05mm,width=0.75mm]}] (0.301,0.301) -- (0.305,0.305);
+  \draw[teal!60!black, line width=0.56pt, -{Latex[length=1.05mm,width=0.75mm]}] (0.305,0.305) -- (0.301,0.301);
+  \draw[green!50!black, line width=0.56pt, -{Latex[length=1.05mm,width=0.75mm]}] (0.301,0.301) -- (0.305,0.305);
+  \draw[orange!70!black, line width=0.56pt, -{Latex[length=1.05mm,width=0.75mm]}] (0.305,0.305) -- (0.301,0.301);
+  \draw[red!75!black, line width=0.56pt, -{Latex[length=1.05mm,width=0.75mm]}] (0.301,0.301) -- (0.305,0.305);
+  \draw[gray!70, line width=0.56pt, -{Latex[length=1.05mm,width=0.75mm]}] (0.570,0.260) -- (0.623,0.348);
+  \draw[gray!62, line width=0.56pt, -{Latex[length=1.05mm,width=0.75mm]}] (0.623,0.348) -- (0.560,0.550);
+  \draw[blue!40, line width=0.56pt, -{Latex[length=1.05mm,width=0.75mm]}] (0.560,0.550) -- (0.648,0.648);
+  \draw[cyan!50!black, line width=0.56pt, -{Latex[length=1.05mm,width=0.75mm]}] (0.648,0.648) -- (0.624,0.624);
+  \draw[teal!60!black, line width=0.56pt, -{Latex[length=1.05mm,width=0.75mm]}] (0.624,0.624) -- (0.627,0.627);
+  \draw[green!50!black, line width=0.56pt, -{Latex[length=1.05mm,width=0.75mm]}] (0.627,0.627) -- (0.624,0.624);
+  \draw[orange!70!black, line width=0.56pt, -{Latex[length=1.05mm,width=0.75mm]}] (0.624,0.624) -- (0.627,0.627);
+  \draw[red!75!black, line width=0.56pt, -{Latex[length=1.05mm,width=0.75mm]}] (0.627,0.627) -- (0.624,0.624);
+  \draw[gray!70, line width=0.56pt, -{Latex[length=1.05mm,width=0.75mm]}] (0.710,0.330) -- (0.796,0.538);
+  \draw[gray!62, line width=0.56pt, -{Latex[length=1.05mm,width=0.75mm]}] (0.796,0.538) -- (0.881,0.746);
+  \draw[blue!40, line width=0.56pt, -{Latex[length=1.05mm,width=0.75mm]}] (0.881,0.746) -- (0.968,0.954);
+  \draw[cyan!50!black, line width=0.56pt, -{Latex[length=1.05mm,width=0.75mm]}] (0.968,0.954) -- (0.991,0.991);
+  \draw[teal!60!black, line width=0.56pt, -{Latex[length=1.05mm,width=0.75mm]}] (0.991,0.991) -- (0.988,0.988);
+  \draw[green!50!black, line width=0.56pt, -{Latex[length=1.05mm,width=0.75mm]}] (0.988,0.988) -- (0.991,0.991);
+  \draw[orange!70!black, line width=0.56pt, -{Latex[length=1.05mm,width=0.75mm]}] (0.991,0.991) -- (0.988,0.988);
+  \draw[red!75!black, line width=0.56pt, -{Latex[length=1.05mm,width=0.75mm]}] (0.988,0.988) -- (0.991,0.991);
+  \draw[gray!70, line width=0.56pt, -{Latex[length=1.05mm,width=0.75mm]}] (0.820,0.080) -- (0.849,0.112);
+  \draw[gray!62, line width=0.56pt, -{Latex[length=1.05mm,width=0.75mm]}] (0.849,0.112) -- (0.646,0.189);
+  \draw[blue!40, line width=0.56pt, -{Latex[length=1.05mm,width=0.75mm]}] (0.646,0.189) -- (0.489,0.326);
+  \draw[cyan!50!black, line width=0.56pt, -{Latex[length=1.05mm,width=0.75mm]}] (0.489,0.326) -- (0.414,0.414);
+  \draw[teal!60!black, line width=0.56pt, -{Latex[length=1.05mm,width=0.75mm]}] (0.414,0.414) -- (0.417,0.417);
+  \draw[green!50!black, line width=0.56pt, -{Latex[length=1.05mm,width=0.75mm]}] (0.417,0.417) -- (0.414,0.414);
+  \draw[orange!70!black, line width=0.56pt, -{Latex[length=1.05mm,width=0.75mm]}] (0.414,0.414) -- (0.417,0.417);
+  \draw[red!75!black, line width=0.56pt, -{Latex[length=1.05mm,width=0.75mm]}] (0.417,0.417) -- (0.414,0.414);
+  \fill[gray!65] (0.100,0.740) circle (0.014);
+  \fill[gray!65] (0.180,0.490) circle (0.014);
+  \fill[gray!65] (0.120,0.610) circle (0.014);
+  \fill[gray!65] (0.330,0.580) circle (0.014);
+  \fill[gray!65] (0.460,0.280) circle (0.014);
+  \fill[gray!65] (0.410,0.450) circle (0.014);
+  \fill[gray!65] (0.630,0.120) circle (0.014);
+  \fill[gray!65] (0.570,0.260) circle (0.014);
+  \fill[gray!65] (0.710,0.330) circle (0.014);
+  \fill[gray!65] (0.820,0.080) circle (0.014);
+  \fill[red!80!black] (0.845,0.845) circle (0.018);
+  \fill[red!80!black] (0.017,0.017) circle (0.018);
+  \fill[red!80!black] (0.000,0.027) circle (0.018);
+  \fill[red!80!black] (0.734,0.734) circle (0.018);
+  \fill[red!80!black] (0.175,0.175) circle (0.018);
+  \fill[red!80!black] (0.521,0.521) circle (0.018);
+  \fill[red!80!black] (0.305,0.305) circle (0.018);
+  \fill[red!80!black] (0.624,0.624) circle (0.018);
+  \fill[red!80!black] (0.991,0.991) circle (0.018);
+  \fill[red!80!black] (0.414,0.414) circle (0.018);
+  \node[below] at (0.5,-0.09) {$x_1$};
+  \node[rotate=90] at (-0.12,0.5) {$x_2$};
+\end{tikzpicture}
+\end{minipage}\hfill
+\begin{minipage}{0.48\textwidth}
+\centering
+\begin{tikzpicture}[scale=4.9, every node/.style={font=\scriptsize}]
+  \draw[very thin,gray!25] (0.000,0.000) grid[step=0.1] (1.000,1.000);
+  \draw[thick] (0.000,0.000) rectangle (1.000,1.000);
+  \draw[ultra thick,blue!70!black] plot[smooth] coordinates {(0.000,1.000) (0.190,0.990) (0.360,0.960) (0.510,0.910) (0.640,0.840) (0.750,0.750) (0.840,0.640) (0.910,0.510) (0.960,0.360) (0.990,0.190) (1.000,0.000)};
+  \foreach \x/\lab in {0/0,1/1} {\draw[thin,gray!65] (\x,0) -- +(0,-0.014); \node[below,font=\scriptsize] at (\x,-0.022) {\lab};}
+  \foreach \y/\lab in {0/0,1/1} {\draw[thin,gray!65] (0,\y) -- +(-0.014,0); \node[left,font=\scriptsize] at (-0.022,\y) {\lab};}
+  \node[above] at (0.5,1.03) {objective space};
+  \draw[gray!70, line width=0.56pt, -{Latex[length=1.05mm,width=0.75mm]}] (0.561,0.721) -- (0.725,0.611);
+  \draw[gray!62, line width=0.56pt, -{Latex[length=1.05mm,width=0.75mm]}] (0.725,0.611) -- (0.866,0.479);
+  \draw[blue!40, line width=0.56pt, -{Latex[length=1.05mm,width=0.75mm]}] (0.866,0.479) -- (0.952,0.317);
+  \draw[cyan!50!black, line width=0.56pt, -{Latex[length=1.05mm,width=0.75mm]}] (0.952,0.317) -- (0.976,0.287);
+  \draw[teal!60!black, line width=0.56pt, -{Latex[length=1.05mm,width=0.75mm]}] (0.976,0.287) -- (0.977,0.281);
+  \draw[green!50!black, line width=0.56pt, -{Latex[length=1.05mm,width=0.75mm]}] (0.977,0.281) -- (0.976,0.287);
+  \draw[orange!70!black, line width=0.56pt, -{Latex[length=1.05mm,width=0.75mm]}] (0.976,0.287) -- (0.977,0.281);
+  \draw[red!75!black, line width=0.56pt, -{Latex[length=1.05mm,width=0.75mm]}] (0.977,0.281) -- (0.976,0.287);
+  \draw[gray!70, line width=0.56pt, -{Latex[length=1.05mm,width=0.75mm]}] (0.534,0.864) -- (0.340,0.956);
+  \draw[gray!62, line width=0.56pt, -{Latex[length=1.05mm,width=0.75mm]}] (0.340,0.956) -- (0.096,0.997);
+  \draw[blue!40, line width=0.56pt, -{Latex[length=1.05mm,width=0.75mm]}] (0.096,0.997) -- (0.026,1.000);
+  \draw[cyan!50!black, line width=0.56pt, -{Latex[length=1.05mm,width=0.75mm]}] (0.026,1.000) -- (0.033,1.000);
+  \draw[teal!60!black, line width=0.56pt, -{Latex[length=1.05mm,width=0.75mm]}] (0.033,1.000) -- (0.026,1.000);
+  \draw[green!50!black, line width=0.56pt, -{Latex[length=1.05mm,width=0.75mm]}] (0.026,1.000) -- (0.033,1.000);
+  \draw[orange!70!black, line width=0.56pt, -{Latex[length=1.05mm,width=0.75mm]}] (0.033,1.000) -- (0.026,1.000);
+  \draw[red!75!black, line width=0.56pt, -{Latex[length=1.05mm,width=0.75mm]}] (0.026,1.000) -- (0.033,1.000);
+  \draw[gray!70, line width=0.56pt, -{Latex[length=1.05mm,width=0.75mm]}] (0.537,0.807) -- (0.313,0.900);
+  \draw[gray!62, line width=0.56pt, -{Latex[length=1.05mm,width=0.75mm]}] (0.313,0.900) -- (0.051,0.952);
+  \draw[blue!40, line width=0.56pt, -{Latex[length=1.05mm,width=0.75mm]}] (0.051,0.952) -- (0.000,0.976);
+  \draw[cyan!50!black, line width=0.56pt, -{Latex[length=1.05mm,width=0.75mm]}] (0.000,0.976) -- (0.000,0.992);
+  \draw[teal!60!black, line width=0.56pt, -{Latex[length=1.05mm,width=0.75mm]}] (0.000,0.992) -- (0.000,0.994);
+  \draw[green!50!black, line width=0.56pt, -{Latex[length=1.05mm,width=0.75mm]}] (0.000,0.994) -- (0.000,0.996);
+  \draw[orange!70!black, line width=0.56pt, -{Latex[length=1.05mm,width=0.75mm]}] (0.000,0.996) -- (0.000,0.997);
+  \draw[red!75!black, line width=0.56pt, -{Latex[length=1.05mm,width=0.75mm]}] (0.000,0.997) -- (0.000,0.998);
+  \draw[gray!70, line width=0.56pt, -{Latex[length=1.05mm,width=0.75mm]}] (0.687,0.777) -- (0.813,0.677);
+  \draw[gray!62, line width=0.56pt, -{Latex[length=1.05mm,width=0.75mm]}] (0.813,0.677) -- (0.896,0.541);
+  \draw[blue!40, line width=0.56pt, -{Latex[length=1.05mm,width=0.75mm]}] (0.896,0.541) -- (0.955,0.380);
+  \draw[cyan!50!black, line width=0.56pt, -{Latex[length=1.05mm,width=0.75mm]}] (0.955,0.380) -- (0.929,0.461);
+  \draw[teal!60!black, line width=0.56pt, -{Latex[length=1.05mm,width=0.75mm]}] (0.929,0.461) -- (0.928,0.466);
+  \draw[green!50!black, line width=0.56pt, -{Latex[length=1.05mm,width=0.75mm]}] (0.928,0.466) -- (0.929,0.461);
+  \draw[orange!70!black, line width=0.56pt, -{Latex[length=1.05mm,width=0.75mm]}] (0.929,0.461) -- (0.928,0.466);
+  \draw[red!75!black, line width=0.56pt, -{Latex[length=1.05mm,width=0.75mm]}] (0.928,0.466) -- (0.929,0.461);
+  \draw[gray!70, line width=0.56pt, -{Latex[length=1.05mm,width=0.75mm]}] (0.595,0.855) -- (0.510,0.910);
+  \draw[gray!62, line width=0.56pt, -{Latex[length=1.05mm,width=0.75mm]}] (0.510,0.910) -- (0.368,0.958);
+  \draw[blue!40, line width=0.56pt, -{Latex[length=1.05mm,width=0.75mm]}] (0.368,0.958) -- (0.316,0.970);
+  \draw[cyan!50!black, line width=0.56pt, -{Latex[length=1.05mm,width=0.75mm]}] (0.316,0.970) -- (0.319,0.969);
+  \draw[teal!60!black, line width=0.56pt, -{Latex[length=1.05mm,width=0.75mm]}] (0.319,0.969) -- (0.325,0.968);
+  \draw[green!50!black, line width=0.56pt, -{Latex[length=1.05mm,width=0.75mm]}] (0.325,0.968) -- (0.319,0.969);
+  \draw[orange!70!black, line width=0.56pt, -{Latex[length=1.05mm,width=0.75mm]}] (0.319,0.969) -- (0.325,0.968);
+  \draw[red!75!black, line width=0.56pt, -{Latex[length=1.05mm,width=0.75mm]}] (0.325,0.968) -- (0.319,0.969);
+  \draw[gray!70, line width=0.56pt, -{Latex[length=1.05mm,width=0.75mm]}] (0.675,0.815) -- (0.645,0.837);
+  \draw[gray!62, line width=0.56pt, -{Latex[length=1.05mm,width=0.75mm]}] (0.645,0.837) -- (0.682,0.810);
+  \draw[blue!40, line width=0.56pt, -{Latex[length=1.05mm,width=0.75mm]}] (0.682,0.810) -- (0.774,0.725);
+  \draw[cyan!50!black, line width=0.56pt, -{Latex[length=1.05mm,width=0.75mm]}] (0.774,0.725) -- (0.770,0.729);
+  \draw[teal!60!black, line width=0.56pt, -{Latex[length=1.05mm,width=0.75mm]}] (0.770,0.729) -- (0.767,0.732);
+  \draw[green!50!black, line width=0.56pt, -{Latex[length=1.05mm,width=0.75mm]}] (0.767,0.732) -- (0.770,0.729);
+  \draw[orange!70!black, line width=0.56pt, -{Latex[length=1.05mm,width=0.75mm]}] (0.770,0.729) -- (0.767,0.732);
+  \draw[red!75!black, line width=0.56pt, -{Latex[length=1.05mm,width=0.75mm]}] (0.767,0.732) -- (0.770,0.729);
+  \draw[gray!70, line width=0.56pt, -{Latex[length=1.05mm,width=0.75mm]}] (0.544,0.794) -- (0.571,0.818);
+  \draw[gray!62, line width=0.56pt, -{Latex[length=1.05mm,width=0.75mm]}] (0.571,0.818) -- (0.543,0.889);
+  \draw[blue!40, line width=0.56pt, -{Latex[length=1.05mm,width=0.75mm]}] (0.543,0.889) -- (0.512,0.909);
+  \draw[cyan!50!black, line width=0.56pt, -{Latex[length=1.05mm,width=0.75mm]}] (0.512,0.909) -- (0.517,0.907);
+  \draw[teal!60!black, line width=0.56pt, -{Latex[length=1.05mm,width=0.75mm]}] (0.517,0.907) -- (0.512,0.909);
+  \draw[green!50!black, line width=0.56pt, -{Latex[length=1.05mm,width=0.75mm]}] (0.512,0.909) -- (0.517,0.907);
+  \draw[orange!70!black, line width=0.56pt, -{Latex[length=1.05mm,width=0.75mm]}] (0.517,0.907) -- (0.512,0.909);
+  \draw[red!75!black, line width=0.56pt, -{Latex[length=1.05mm,width=0.75mm]}] (0.512,0.909) -- (0.517,0.907);
+  \draw[gray!70, line width=0.56pt, -{Latex[length=1.05mm,width=0.75mm]}] (0.634,0.804) -- (0.716,0.746);
+  \draw[gray!62, line width=0.56pt, -{Latex[length=1.05mm,width=0.75mm]}] (0.716,0.746) -- (0.802,0.692);
+  \draw[blue!40, line width=0.56pt, -{Latex[length=1.05mm,width=0.75mm]}] (0.802,0.692) -- (0.876,0.580);
+  \draw[cyan!50!black, line width=0.56pt, -{Latex[length=1.05mm,width=0.75mm]}] (0.876,0.580) -- (0.858,0.611);
+  \draw[teal!60!black, line width=0.56pt, -{Latex[length=1.05mm,width=0.75mm]}] (0.858,0.611) -- (0.861,0.607);
+  \draw[green!50!black, line width=0.56pt, -{Latex[length=1.05mm,width=0.75mm]}] (0.861,0.607) -- (0.858,0.611);
+  \draw[orange!70!black, line width=0.56pt, -{Latex[length=1.05mm,width=0.75mm]}] (0.858,0.611) -- (0.861,0.607);
+  \draw[red!75!black, line width=0.56pt, -{Latex[length=1.05mm,width=0.75mm]}] (0.861,0.607) -- (0.858,0.611);
+  \draw[gray!70, line width=0.56pt, -{Latex[length=1.05mm,width=0.75mm]}] (0.734,0.694) -- (0.872,0.538);
+  \draw[gray!62, line width=0.56pt, -{Latex[length=1.05mm,width=0.75mm]}] (0.872,0.538) -- (0.961,0.333);
+  \draw[blue!40, line width=0.56pt, -{Latex[length=1.05mm,width=0.75mm]}] (0.961,0.333) -- (0.998,0.077);
+  \draw[cyan!50!black, line width=0.56pt, -{Latex[length=1.05mm,width=0.75mm]}] (0.998,0.077) -- (1.000,0.017);
+  \draw[teal!60!black, line width=0.56pt, -{Latex[length=1.05mm,width=0.75mm]}] (1.000,0.017) -- (1.000,0.024);
+  \draw[green!50!black, line width=0.56pt, -{Latex[length=1.05mm,width=0.75mm]}] (1.000,0.024) -- (1.000,0.017);
+  \draw[orange!70!black, line width=0.56pt, -{Latex[length=1.05mm,width=0.75mm]}] (1.000,0.017) -- (1.000,0.024);
+  \draw[red!75!black, line width=0.56pt, -{Latex[length=1.05mm,width=0.75mm]}] (1.000,0.024) -- (1.000,0.017);
+  \draw[gray!70, line width=0.56pt, -{Latex[length=1.05mm,width=0.75mm]}] (0.561,0.661) -- (0.594,0.633);
+  \draw[gray!62, line width=0.56pt, -{Latex[length=1.05mm,width=0.75mm]}] (0.594,0.633) -- (0.609,0.773);
+  \draw[blue!40, line width=0.56pt, -{Latex[length=1.05mm,width=0.75mm]}] (0.609,0.773) -- (0.642,0.827);
+  \draw[cyan!50!black, line width=0.56pt, -{Latex[length=1.05mm,width=0.75mm]}] (0.642,0.827) -- (0.656,0.829);
+  \draw[teal!60!black, line width=0.56pt, -{Latex[length=1.05mm,width=0.75mm]}] (0.656,0.829) -- (0.660,0.826);
+  \draw[green!50!black, line width=0.56pt, -{Latex[length=1.05mm,width=0.75mm]}] (0.660,0.826) -- (0.656,0.829);
+  \draw[orange!70!black, line width=0.56pt, -{Latex[length=1.05mm,width=0.75mm]}] (0.656,0.829) -- (0.660,0.826);
+  \draw[red!75!black, line width=0.56pt, -{Latex[length=1.05mm,width=0.75mm]}] (0.660,0.826) -- (0.656,0.829);
+  \fill[gray!65] (0.561,0.721) circle (0.014);
+  \fill[gray!65] (0.534,0.864) circle (0.014);
+  \fill[gray!65] (0.537,0.807) circle (0.014);
+  \fill[gray!65] (0.687,0.777) circle (0.014);
+  \fill[gray!65] (0.595,0.855) circle (0.014);
+  \fill[gray!65] (0.675,0.815) circle (0.014);
+  \fill[gray!65] (0.544,0.794) circle (0.014);
+  \fill[gray!65] (0.634,0.804) circle (0.014);
+  \fill[gray!65] (0.734,0.694) circle (0.014);
+  \fill[gray!65] (0.561,0.661) circle (0.014);
+  \fill[red!80!black] (0.976,0.287) circle (0.018);
+  \fill[red!80!black] (0.033,1.000) circle (0.018);
+  \fill[red!80!black] (0.000,0.998) circle (0.018);
+  \fill[red!80!black] (0.929,0.461) circle (0.018);
+  \fill[red!80!black] (0.319,0.969) circle (0.018);
+  \fill[red!80!black] (0.770,0.729) circle (0.018);
+  \fill[red!80!black] (0.517,0.907) circle (0.018);
+  \fill[red!80!black] (0.858,0.611) circle (0.018);
+  \fill[red!80!black] (1.000,0.017) circle (0.018);
+  \fill[red!80!black] (0.656,0.829) circle (0.018);
+  \node[below] at (0.5,-0.09) {$F_1$};
+  \node[rotate=90] at (-0.12,0.5) {$F_2$};
+\end{tikzpicture}
+\end{minipage}
+\caption{Projected finite-difference diffusion for the perturbed $10$-point summed quadratic example with twice as many iterations as in the previous version. Left: decision-space paths bending toward the efficient diagonal. Right: the corresponding objective-space paths bending toward the curved Pareto front. Gray points denote the initial set and red points the last plotted iterates. The trajectory colors encode time along the sampled path, progressing from gray through blue/teal and orange to red; the arrow tips indicate the direction of increasing iteration.}
+\label{fig:quadratic-ten-point-both}
+\end{figure}
+
+The perturbation makes the nonlinear geometry visible in both spaces. In decision space, the paths bend toward the diagonal efficient set $\{(t,t):t\in[0,1]\}$. In objective space, the images of these paths bend toward the curved front $\mathcal F$. The final approximation set is numerically close to
+\[
+(0.013,1.000),\ (0.281,0.977),\ (0.443,0.936),\ (0.589,0.872),\ (0.681,0.811),
+\]
+\[
+(0.770,0.729),\ (0.839,0.641),\ (0.920,0.485),\ (0.969,0.320),\ (1.000,0.017).
+\]
+Thus the longer projected diffusion drives the approximation set close to the Pareto front while the repulsion term keeps the points separated along the curve. In particular, this ten-point example shows that the normalized projected finite-difference scheme is already effective on a genuinely nonlinear front: the trajectories bend in both decision and objective space, yet the final point set remains well distributed rather than collapsing into a few clusters.
+
+
+
+\section{A three-objective supersphere benchmark}
+\label{sec:three-objective-supersphere}
+
+We now record three-objective experiments for both layered hypervolume and layered magnitude.  The purpose of this section is not to replace the biobjective analysis above, but to show that the same layered construction extends naturally from the anchored staircase in the plane to the anchored orthogonal union in three dimensions.  For a finite first-front set $B\subseteq [0,\infty)^3$, the three-dimensional dominated-set magnitude used here is
+\[
+\Mag_3(\Dom(B))
+=1+\frac{L_1(B)+L_2(B)+L_3(B)}{2}
+ +\frac{A_{12}(B)+A_{13}(B)+A_{23}(B)}{4}
+ +\frac{\HV_3(B)}{8},
+\]
+where $L_i(B)=\max_{b\in B} b_i$, $A_{ij}(B)$ is the two-dimensional dominated area of the projection onto the $(i,j)$ coordinate plane, and $\HV_3(B)$ is the ordinary anchored three-dimensional hypervolume.  Thus hypervolume appears as the volume term of the magnitude expansion, while magnitude also keeps the edge and face contributions.  The layered three-dimensional surrogate is obtained exactly as before by evaluating each nondomination layer separately and multiplying layer $\ell$ by $\varepsilon^{\ell-1}$.
+
+The benchmark is the simplex-constrained supersphere problem described in Appendix~\ref{app:supersphere-benchmark}.  We first show the three Pareto-front surfaces in Figure~\ref{fig:supersphere-gamma-surfaces}, because the curvature parameter determines how strongly the interior of the front bulges away from the coordinate planes.  We then compare magnitude and hypervolume on these same three cases in Table~\ref{tab:three-d-hv-vs-mag}, followed by point-set visualizations for increasing Das--Dennis budgets.  In each run for Table~\ref{tab:three-d-hv-vs-mag} we used Das--Dennis initialization with $H=3$, a small Gaussian perturbation $\sigma_{\rm DD}=0.01$, and therefore $\mu=(H+1)(H+2)/2=10$ points.  Magnitude and hypervolume runs start from the same seed for each value of $\gamma\in\{0.25,0.5,1.0\}$.  The reference archive for the IGD value was generated by sampling the decision simplex.  The implementation switches between exact inclusion--exclusion for small fronts and sweep-based forward derivatives once the first front exceeds the prescribed threshold.  In Table~\ref{tab:three-d-hv-vs-mag}, the final sets are cross-evaluated by both $\Mag_3$ and $\HV_3$.
+
+\newcommand{\superspheresurface}[2]{%
+\begin{tikzpicture}
+\begin{axis}[
+  width=0.31\linewidth,
+  view={135}{27},
+  xlabel={$F_1$}, ylabel={$F_2$}, zlabel={$F_3$},
+  xmin=0,xmax=1,ymin=0,ymax=1,zmin=0,zmax=1,
+  xtick={0,1},ytick={0,1},ztick={0,1},
+  title={#2},
+  title style={font=\small},
+  tick label style={font=\scriptsize},
+  label style={font=\scriptsize},
+]
+\addplot3[
+  surf,
+  shader=flat,
+  samples=15,
+  samples y=15,
+  domain=0:1,
+  y domain=0:1,
+  draw=blue!35,
+  fill opacity=0.45,
+] ({1-((((x-1)^2+((1-x)*y)^2+((1-x)*(1-y))^2)/2)^(#1))},
+   {1-(((x^2+(((1-x)*y)-1)^2+((1-x)*(1-y))^2)/2)^(#1))},
+   {1-(((x^2+((1-x)*y)^2+(((1-x)*(1-y))-1)^2)/2)^(#1))});
+\end{axis}
+\end{tikzpicture}%
+}
+
+\begin{figure}[htbp]
+\centering
+\superspheresurface{0.25}{$\gamma=0.25$}\hfill
+\superspheresurface{0.5}{$\gamma=0.5$}\hfill
+\superspheresurface{1.0}{$\gamma=1$}
+\caption{Analytic supersphere Pareto-front surfaces for the three bulge parameters used in the experiments.  The vertices remain fixed at the three unit vectors in objective space; changing $\gamma$ changes the position of the interior of the surface.}
+\label{fig:supersphere-gamma-surfaces}
+\end{figure}
+
+\begin{table}[htbp]
+\centering
+\small
+\setlength{\tabcolsep}{4pt}
+\begin{tabular}{clrrrrrrr}
+\hline
+$\gamma$ & Optimized & iters & acc. & $\Mag_3^0$ & $\Mag_3^f$ & $\HV_3^0$ & $\HV_3^f$ & IGD$^f$ \\
+\hline
+0.25 & Magnitude & 31 & 1 & 2.523496 & 2.598694 & 0.024297 & 0.025050 & 0.103891 \\
+0.25 & Hypervolume & 80 & 78 & 2.523496 & 1.889941 & 0.024297 & 0.033109 & 0.074903 \\
+0.5 & Magnitude & 31 & 1 & 2.768453 & 2.776338 & 0.123949 & 0.127677 & 0.137786 \\
+0.5 & Hypervolume & 80 & 78 & 2.768453 & 2.459639 & 0.123949 & 0.160737 & 0.105310 \\
+1.0 & Magnitude & 80 & 75 & 3.073938 & 3.089012 & 0.430424 & 0.466608 & 0.146984 \\
+1.0 & Hypervolume & 80 & 76 & 3.073938 & 3.002202 & 0.430424 & 0.515123 & 0.148137 \\
+\hline
+\end{tabular}
+\caption{Three-objective comparison on the supersphere benchmark for the three bulge parameters shown in Figure~\ref{fig:supersphere-gamma-surfaces}.  Each pair of rows uses a common perturbed Das--Dennis initialization with $H=3$, $\mu=10$, seed $8$, $80$ maximum iterations, and exact-front threshold $6$.  The columns $\Mag_3^0,\HV_3^0$ report the common initial values for the corresponding $\gamma$, while $\Mag_3^f,\HV_3^f$ and IGD$^f$ report final cross-evaluations of the approximation set produced by the optimized indicator.}
+\label{tab:three-d-hv-vs-mag}
+\end{table}
+
+Across the three curvatures, the hypervolume run consistently obtains the larger final volume term, while the magnitude run gives the larger final value of $\Mag_3$.  For $\gamma=0.25$ and $\gamma=0.5$, the magnitude-driven ascent quickly stabilizes after preserving the extreme vertices; for $\gamma=1$ it also accepts many interior moves.  This behavior is consistent with the formula above: in three dimensions, $\HV_3$ measures only the volume contribution, while $\Mag_3$ also rewards the coordinate-axis extents and the projected dominated areas.
+
+
+Figure~\ref{fig:supersphere-3d-comparison} combines the point-set comparisons for $\gamma=0.25$, $0.5$, and $1.0$ in a single float.  Rows correspond to the three front curvatures, and columns to the Das--Dennis budgets $H=2,3,4$.  Red circles denote the final approximation set obtained by optimizing $\Mag_3$, while black triangles denote the final approximation set obtained by optimizing $\HV_3$.  As the front becomes less strongly bulged, both optimized sets move further away from the coordinate axes and deeper into the interior of the surface; the characteristic difference remains visible, with magnitude retaining more extreme extent and hypervolum\begin{figure}[p]
+\centering
+{\small\bfseries $\gamma=0.25$}\par\vspace{0.15em}
+\begin{minipage}{0.32\linewidth}
+\centering
+\begin{tikzpicture}
+\begin{axis}[
+  width=\linewidth,
+  view={135}{27},
+  xlabel={$F_1$}, ylabel={$F_2$}, zlabel={$F_3$},
+  xmin=0,xmax=1,ymin=0,ymax=1,zmin=0,zmax=1,
+  xtick={0,1}, ytick={0,1}, ztick={0,1},
+  title={$H=2,\ \mu=6$},
+  title style={font=\small},
+  tick label style={font=\scriptsize},
+  label style={font=\scriptsize},
+]
+\addplot3[surf,shader=flat,opacity=0.22,samples=13,samples y=13,domain=0:1,y domain=0:1,draw=blue!35,fill opacity=0.22]
+({1-((((x-1)^2+((1-x)*y)^2+((1-x)*(1-y))^2)/2)^0.25)},
+ {1-(((x^2+(((1-x)*y)-1)^2+((1-x)*(1-y))^2)/2)^0.25)},
+ {1-(((x^2+((1-x)*y)^2+(((1-x)*(1-y))-1)^2)/2)^0.25)});
+\addplot3[only marks,mark=*,mark size=1.4pt,red!80!black] coordinates {
+(0.0000,0.0000,1.0000) (0.0747,0.2614,0.3257) (0.0000,1.0000,0.0000)
+(0.3232,0.0725,0.2637) (0.2665,0.3202,0.0725) (1.0000,0.0000,0.0000)};
+\addplot3[only marks,mark=triangle*,mark size=1.6pt,black] coordinates {
+(0.1282,0.1282,0.4581) (0.1962,0.2093,0.3116) (0.1285,0.4576,0.1285)
+(0.3144,0.1957,0.2069) (0.2078,0.3123,0.1971) (0.4526,0.1308,0.1308)};
+\end{axis}
+\end{tikzpicture}
+\end{minipage}\hfill
+\begin{minipage}{0.32\linewidth}
+\centering
+\begin{tikzpicture}
+\begin{axis}[
+  width=\linewidth,
+  view={135}{27},
+  xlabel={$F_1$}, ylabel={$F_2$}, zlabel={$F_3$},
+  xmin=0,xmax=1,ymin=0,ymax=1,zmin=0,zmax=1,
+  xtick={0,1}, ytick={0,1}, ztick={0,1},
+  title={$H=3,\ \mu=10$},
+  title style={font=\small},
+  tick label style={font=\scriptsize},
+  label style={font=\scriptsize},
+]
+\addplot3[surf,shader=flat,opacity=0.22,samples=13,samples y=13,domain=0:1,y domain=0:1,draw=blue!35,fill opacity=0.22]
+({1-((((x-1)^2+((1-x)*y)^2+((1-x)*(1-y))^2)/2)^0.25)},
+ {1-(((x^2+(((1-x)*y)-1)^2+((1-x)*(1-y))^2)/2)^0.25)},
+ {1-(((x^2+((1-x)*y)^2+(((1-x)*(1-y))-1)^2)/2)^0.25)});
+\addplot3[only marks,mark=*,mark size=1.4pt,red!80!black] coordinates {
+(0.0000,0.0000,1.0000) (0.0602,0.1559,0.4637) (0.0724,0.3955,0.2031)
+(0.0000,1.0000,0.0000) (0.1770,0.0805,0.4289) (0.2378,0.2571,0.2253)
+(0.1605,0.4565,0.0600) (0.3990,0.0758,0.2000) (0.4546,0.1618,0.0582)
+(1.0000,0.0000,0.0000)};
+\addplot3[only marks,mark=triangle*,mark size=1.6pt,black] coordinates {
+(0.0995,0.0995,0.5229) (0.1426,0.1833,0.3845) (0.1580,0.2862,0.2660)
+(0.1006,0.5202,0.1006) (0.2238,0.1579,0.3295) (0.2734,0.2706,0.1692)
+(0.1734,0.3752,0.1650) (0.3417,0.1376,0.2258) (0.3867,0.1826,0.1409)
+(0.5170,0.1020,0.1020)};
+\end{axis}
+\end{tikzpicture}
+\end{minipage}\hfill
+\begin{minipage}{0.32\linewidth}
+\centering
+\begin{tikzpicture}
+\begin{axis}[
+  width=\linewidth,
+  view={135}{27},
+  xlabel={$F_1$}, ylabel={$F_2$}, zlabel={$F_3$},
+  xmin=0,xmax=1,ymin=0,ymax=1,zmin=0,zmax=1,
+  xtick={0,1}, ytick={0,1}, ztick={0,1},
+  title={$H=4,\ \mu=15$},
+  title style={font=\small},
+  tick label style={font=\scriptsize},
+  label style={font=\scriptsize},
+]
+\addplot3[surf,shader=flat,opacity=0.22,samples=13,samples y=13,domain=0:1,y domain=0:1,draw=blue!35,fill opacity=0.22]
+({1-((((x-1)^2+((1-x)*y)^2+((1-x)*(1-y))^2)/2)^0.25)},
+ {1-(((x^2+(((1-x)*y)-1)^2+((1-x)*(1-y))^2)/2)^0.25)},
+ {1-(((x^2+((1-x)*y)^2+(((1-x)*(1-y))-1)^2)/2)^0.25)});
+\addplot3[only marks,mark=*,mark size=1.25pt,red!80!black] coordinates {
+(0.0000,0.0000,1.0000) (0.0502,0.1221,0.5211) (0.0726,0.2870,0.2988)
+(0.0515,0.5143,0.1258) (0.0044,0.8997,0.0044) (0.1372,0.0528,0.4945)
+(0.1791,0.1818,0.3538) (0.1872,0.3410,0.1871) (0.1400,0.4896,0.0532)
+(0.2887,0.0748,0.2969) (0.3509,0.1767,0.1872) (0.2942,0.2914,0.0761)
+(0.5307,0.0475,0.1170) (0.4966,0.1359,0.0535) (1.0000,0.0000,0.0000)};
+\addplot3[only marks,mark=triangle*,mark size=1.45pt,black] coordinates {
+(0.0626,0.0604,0.6246) (0.1214,0.1408,0.4508) (0.1470,0.2797,0.2797)
+(0.0880,0.5227,0.1091) (0.0000,1.0000,0.0000) (0.1353,0.1046,0.4725)
+(0.1879,0.1811,0.3460) (0.1877,0.3337,0.1944) (0.1403,0.4651,0.1056)
+(0.2733,0.1488,0.2850) (0.3419,0.1894,0.1841) (0.2857,0.2714,0.1508)
+(0.4472,0.1191,0.1456) (0.4708,0.1371,0.1038) (0.6164,0.0649,0.0636)};
+\end{axis}
+\end{tikzpicture}
+\end{minipage}
+\vspace{0.45em}
+{\small\bfseries $\gamma=0.5$}\par\vspace{0.15em}
+\begin{minipage}{0.32\linewidth}
+\centering
+\begin{tikzpicture}
+\begin{axis}[
+  width=\linewidth,
+  view={135}{27},
+  xlabel={$F_1$}, ylabel={$F_2$}, zlabel={$F_3$},
+  xmin=0,xmax=1,ymin=0,ymax=1,zmin=0,zmax=1,
+  xtick={0,1}, ytick={0,1}, ztick={0,1},
+  title={$H=2,\ \mu=6$},
+  title style={font=\small},
+  tick label style={font=\scriptsize},
+  label style={font=\scriptsize},
+]
+\addplot3[surf,shader=flat,opacity=0.22,samples=13,samples y=13,domain=0:1,y domain=0:1,draw=blue!35,fill opacity=0.22]
+({1-((((x-1)^2+((1-x)*y)^2+((1-x)*(1-y))^2)/2)^0.5)},
+ {1-(((x^2+(((1-x)*y)-1)^2+((1-x)*(1-y))^2)/2)^0.5)},
+ {1-(((x^2+((1-x)*y)^2+(((1-x)*(1-y))-1)^2)/2)^0.5)});
+\addplot3[only marks,mark=*,mark size=1.4pt,red!80!black] coordinates {
+(0.0000,0.0000,1.0000) (0.1478,0.4552,0.5443) (0.0000,1.0000,0.0000)
+(0.5410,0.1434,0.4587) (0.4628,0.5370,0.1433) (1.0000,0.0000,0.0000)};
+\addplot3[only marks,mark=triangle*,mark size=1.6pt,black] coordinates {
+(0.2518,0.2506,0.6914) (0.3544,0.3741,0.5264) (0.2479,0.6959,0.2479)
+(0.5324,0.3529,0.3682) (0.3697,0.5347,0.3484) (0.6923,0.2505,0.2505)};
+\end{axis}
+\end{tikzpicture}
+\end{minipage}\hfill
+\begin{minipage}{0.32\linewidth}
+\centering
+\begin{tikzpicture}
+\begin{axis}[
+  width=\linewidth,
+  view={135}{27},
+  xlabel={$F_1$}, ylabel={$F_2$}, zlabel={$F_3$},
+  xmin=0,xmax=1,ymin=0,ymax=1,zmin=0,zmax=1,
+  xtick={0,1}, ytick={0,1}, ztick={0,1},
+  title={$H=3,\ \mu=10$},
+  title style={font=\small},
+  tick label style={font=\scriptsize},
+  label style={font=\scriptsize},
+]
+\addplot3[surf,shader=flat,opacity=0.22,samples=13,samples y=13,domain=0:1,y domain=0:1,draw=blue!35,fill opacity=0.22]
+({1-((((x-1)^2+((1-x)*y)^2+((1-x)*(1-y))^2)/2)^0.5)},
+ {1-(((x^2+(((1-x)*y)-1)^2+((1-x)*(1-y))^2)/2)^0.5)},
+ {1-(((x^2+((1-x)*y)^2+(((1-x)*(1-y))-1)^2)/2)^0.5)});
+\addplot3[only marks,mark=*,mark size=1.4pt,red!80!black] coordinates {
+(0.0000,0.0000,1.0000) (0.1193,0.2878,0.7119) (0.1405,0.6351,0.3643)
+(0.0000,1.0000,0.0000) (0.3642,0.1570,0.6334) (0.4203,0.4475,0.3991)
+(0.2954,0.7044,0.1188) (0.6371,0.1438,0.3619) (0.7023,0.2977,0.1155) (1.0000,0.0000,0.0000)};
+\addplot3[only marks,mark=triangle*,mark size=1.6pt,black] coordinates {
+(0.1874,0.1874,0.7746) (0.2526,0.3400,0.6222) (0.2839,0.5022,0.4534)
+(0.1894,0.7720,0.1894) (0.3869,0.2927,0.5588) (0.4707,0.4670,0.3131)
+(0.3190,0.6159,0.2912) (0.5560,0.2562,0.4121) (0.6172,0.3346,0.2695) (0.7689,0.1919,0.1919)};
+\end{axis}
+\end{tikzpicture}
+\end{minipage}\hfill
+\begin{minipage}{0.32\linewidth}
+\centering
+\begin{tikzpicture}
+\begin{axis}[
+  width=\linewidth,
+  view={135}{27},
+  xlabel={$F_1$}, ylabel={$F_2$}, zlabel={$F_3$},
+  xmin=0,xmax=1,ymin=0,ymax=1,zmin=0,zmax=1,
+  xtick={0,1}, ytick={0,1}, ztick={0,1},
+  title={$H=4,\ \mu=15$},
+  title style={font=\small},
+  tick label style={font=\scriptsize},
+  label style={font=\scriptsize},
+]
+\addplot3[surf,shader=flat,opacity=0.22,samples=13,samples y=13,domain=0:1,y domain=0:1,draw=blue!35,fill opacity=0.22]
+({1-((((x-1)^2+((1-x)*y)^2+((1-x)*(1-y))^2)/2)^0.5)},
+ {1-(((x^2+(((1-x)*y)-1)^2+((1-x)*(1-y))^2)/2)^0.5)},
+ {1-(((x^2+((1-x)*y)^2+(((1-x)*(1-y))-1)^2)/2)^0.5)});
+\addplot3[only marks,mark=*,mark size=1.25pt,red!80!black] coordinates {
+(0.0000,0.0000,1.0000) (0.0974,0.2255,0.7744) (0.1451,0.4914,0.5084)
+(0.0999,0.7679,0.2320) (0.0120,0.9861,0.0120) (0.2591,0.1050,0.7408)
+(0.3235,0.3281,0.5862) (0.3371,0.5696,0.3366) (0.2640,0.7359,0.1059)
+(0.4942,0.1478,0.5054) (0.5824,0.3196,0.3368) (0.5039,0.4954,0.1529)
+(0.7827,0.0945,0.2172) (0.7339,0.2657,0.1158) (1.0000,0.0000,0.0000)};
+\addplot3[only marks,mark=triangle*,mark size=1.45pt,black] coordinates {
+(0.1496,0.1497,0.8218) (0.2225,0.2225,0.7294) (0.2629,0.4869,0.4804)
+(0.1795,0.7848,0.1791) (0.0000,1.0000,0.0000) (0.2948,0.2948,0.6312)
+(0.3438,0.3592,0.5468) (0.3396,0.5678,0.3365) (0.2716,0.6636,0.2716)
+(0.4860,0.2617,0.4819) (0.5247,0.3691,0.3617) (0.4841,0.4837,0.2619)
+(0.6453,0.2318,0.3254) (0.6637,0.3094,0.2217) (0.7926,0.1731,0.1731)};
+\end{axis}
+\end{tikzpicture}
+\end{minipage}
+\vspace{0.45em}
+{\small\bfseries $\gamma=1.0$}\par\vspace{0.15em}
+\begin{minipage}{0.32\linewidth}
+\centering
+\begin{tikzpicture}
+\begin{axis}[
+  width=\linewidth,
+  view={135}{27},
+  xlabel={$F_1$}, ylabel={$F_2$}, zlabel={$F_3$},
+  xmin=0,xmax=1,ymin=0,ymax=1,zmin=0,zmax=1,
+  xtick={0,1}, ytick={0,1}, ztick={0,1},
+  title={$H=2,\ \mu=6$},
+  title style={font=\small},
+  tick label style={font=\scriptsize},
+  label style={font=\scriptsize},
+]
+\addplot3[surf,shader=flat,opacity=0.22,samples=13,samples y=13,domain=0:1,y domain=0:1,draw=blue!35,fill opacity=0.22]
+({1-((((x-1)^2+((1-x)*y)^2+((1-x)*(1-y))^2)/2)^1.0)},
+ {1-(((x^2+(((1-x)*y)-1)^2+((1-x)*(1-y))^2)/2)^1.0)},
+ {1-(((x^2+((1-x)*y)^2+(((1-x)*(1-y))-1)^2)/2)^1.0)});
+\addplot3[only marks,mark=*,mark size=1.4pt,red!80!black] coordinates {
+(0.1975,0.1975,0.9849) (0.5399,0.5399,0.8338) (0.1978,0.9849,0.1978)
+(0.8334,0.5405,0.5402) (0.5396,0.8341,0.5396) (0.9856,0.1936,0.1937)};
+\addplot3[only marks,mark=triangle*,mark size=1.6pt,black] coordinates {
+(0.4425,0.4425,0.9030) (0.6004,0.6004,0.7704) (0.4510,0.8981,0.4510)
+(0.7701,0.6006,0.6006) (0.6070,0.7619,0.6072) (0.9008,0.4464,0.4464)};
+\end{axis}
+\end{tikzpicture}
+\end{minipage}\hfill
+\begin{minipage}{0.32\linewidth}
+\centering
+\begin{tikzpicture}
+\begin{axis}[
+  width=\linewidth,
+  view={135}{27},
+  xlabel={$F_1$}, ylabel={$F_2$}, zlabel={$F_3$},
+  xmin=0,xmax=1,ymin=0,ymax=1,zmin=0,zmax=1,
+  xtick={0,1}, ytick={0,1}, ztick={0,1},
+  title={$H=3,\ \mu=10$},
+  title style={font=\small},
+  tick label style={font=\scriptsize},
+  label style={font=\scriptsize},
+]
+\addplot3[surf,shader=flat,opacity=0.22,samples=13,samples y=13,domain=0:1,y domain=0:1,draw=blue!35,fill opacity=0.22]
+({1-((((x-1)^2+((1-x)*y)^2+((1-x)*(1-y))^2)/2)^1.0)},
+ {1-(((x^2+(((1-x)*y)-1)^2+((1-x)*(1-y))^2)/2)^1.0)},
+ {1-(((x^2+((1-x)*y)^2+(((1-x)*(1-y))-1)^2)/2)^1.0)});
+\addplot3[only marks,mark=*,mark size=1.4pt,red!80!black] coordinates {
+(0.1248,0.1248,0.9943) (0.3274,0.5040,0.9054) (0.3019,0.8593,0.6053)
+(0.0996,0.9965,0.0996) (0.6158,0.3030,0.8529) (0.6614,0.6759,0.6625)
+(0.5013,0.9074,0.3194) (0.8459,0.3070,0.6268) (0.8993,0.5183,0.3301) (0.9961,0.1044,0.1044)};
+\addplot3[only marks,mark=triangle*,mark size=1.6pt,black] coordinates {
+(0.4009,0.4009,0.9243) (0.5206,0.5873,0.8187) (0.4548,0.7686,0.6957)
+(0.3880,0.9302,0.3876) (0.6615,0.5152,0.7731) (0.7226,0.7051,0.5429)
+(0.5503,0.8468,0.4960) (0.8098,0.4341,0.6495) (0.8498,0.5693,0.4591) (0.9364,0.3731,0.3731)};
+\end{axis}
+\end{tikzpicture}
+\end{minipage}\hfill
+\begin{minipage}{0.32\linewidth}
+\centering
+\begin{tikzpicture}
+\begin{axis}[
+  width=\linewidth,
+  view={135}{27},
+  xlabel={$F_1$}, ylabel={$F_2$}, zlabel={$F_3$},
+  xmin=0,xmax=1,ymin=0,ymax=1,zmin=0,zmax=1,
+  xtick={0,1}, ytick={0,1}, ztick={0,1},
+  title={$H=4,\ \mu=15$},
+  title style={font=\small},
+  tick label style={font=\scriptsize},
+  label style={font=\scriptsize},
+]
+\addplot3[surf,shader=flat,opacity=0.22,samples=13,samples y=13,domain=0:1,y domain=0:1,draw=blue!35,fill opacity=0.22]
+({1-((((x-1)^2+((1-x)*y)^2+((1-x)*(1-y))^2)/2)^1.0)},
+ {1-(((x^2+(((1-x)*y)-1)^2+((1-x)*(1-y))^2)/2)^1.0)},
+ {1-(((x^2+((1-x)*y)^2+(((1-x)*(1-y))-1)^2)/2)^1.0)});
+\addplot3[only marks,mark=*,mark size=1.25pt,red!80!black] coordinates {
+(0.0588,0.0591,0.9988) (0.2399,0.3656,0.9560) (0.3122,0.7409,0.7563)
+(0.2576,0.9482,0.3920) (0.0648,0.9985,0.0648) (0.4735,0.2389,0.9240)
+(0.5251,0.5375,0.8412) (0.5481,0.8294,0.5415) (0.4890,0.9178,0.2453)
+(0.7417,0.3117,0.7555) (0.8352,0.5157,0.5589) (0.7534,0.7437,0.3138)
+(0.9544,0.2456,0.3704) (0.9176,0.4898,0.2453) (0.9986,0.0637,0.0637)};
+\addplot3[only marks,mark=triangle*,mark size=1.45pt,black] coordinates {
+(0.3609,0.3609,0.9413) (0.4139,0.5913,0.8503) (0.4462,0.7624,0.7060)
+(0.3235,0.9330,0.4227) (0.0000,1.0000,0.0000) (0.5498,0.4096,0.8720)
+(0.6014,0.6148,0.7605) (0.5687,0.8107,0.5598) (0.5030,0.8977,0.3795)
+(0.7466,0.4774,0.7118) (0.8027,0.6163,0.5183) (0.7160,0.7546,0.4427)
+(0.8469,0.3886,0.6068) (0.8842,0.5112,0.4268) (0.9530,0.3284,0.3284)};
+\end{axis}
+\end{tikzpicture}
+\end{minipage}
+\caption{Final approximation sets for the three supersphere fronts and the three Das--Dennis point budgets. Rows correspond to $\gamma=0.25$, $0.5$, and $1.0$; columns correspond to $H=2,3,4$ (i.e., $\mu=6,10,15$). Red circles show the final set obtained by optimizing $\Mag_3$, and black triangles show the final set obtained by optimizing $\HV_3$.}
+\label{fig:supersphere-3d-comparison}
+\end{figure}
+
+\begin{table}[htbp]
+\centering
+\small
+\setlength{\tabcolsep}{5pt}
+\begin{tabular}{rrclrrr}
+\hline
+$H$ & $\mu$ & Optimized & iters & $\Mag_3^f$ & $\HV_3^f$ & IGD$^f$ \\
+\hline
+2 & 6 & Magnitude & 31 & 2.569043 & 0.014874 & 0.170321 \\
+2 & 6 & Hypervolume & 80 & 1.779751 & 0.029003 & 0.098776 \\
+3 & 10 & Magnitude & 31 & 2.598694 & 0.025050 & 0.103891 \\
+3 & 10 & Hypervolume & 80 & 1.889941 & 0.033109 & 0.074903 \\
+4 & 15 & Magnitude & 44 & 2.565968 & 0.030665 & 0.076746 \\
+4 & 15 & Hypervolume & 36 & 2.238310 & 0.034769 & 0.065014 \\
+\hline
+\end{tabular}
+\caption{Point-set sensitivity for the $\gamma=0.25$ supersphere case shown in Figure~\ref{fig:supersphere-3d-comparison}.  The Das--Dennis parameter $H$ gives $\mu=(H+1)(H+2)/2$ initial points.  For each $H$, magnitude and hypervolume use the same perturbed initial point set and are cross-evaluated by both indicators.}
+\label{tab:three-d-pointset-sensitivity}
+\end{table}
+
+
+
+
+\section{Convergence behaviour}
+\label{sec:convergence-behaviour}
+
+This section records seven representative convergence traces rather than an exhaustive performance study.  The aim is to show how layered ascent behaves when the initial approximation set is away from the final indicator configuration.  We use a curved two-objective quadratic front, the three-objective supersphere instance with $\gamma=1$ and a simplex-constrained Das--Dennis point set, a three-objective layered-start experiment in which the same $\gamma=1$ objective is optimized in the mildly enlarged decision box $[-0.4,1.4]^3$, and four longer 500-episode variants of the layered-start run with stochastic stagnation recovery.  The longer variants use two point budgets, $H=4$ with $\mu=15$ and $H=5$ with $\mu=(H+1)(H+2)/2=21$, and are run once with layered magnitude as the optimized indicator and once with layered hypervolume.  The layered-start experiments are included specifically to make the layer dynamics visible without using an extreme starting cloud: the initial points are sampled from $[-0.25,1.25]^3$, so several points begin outside the natural nondominated range, but the set does not collapse to one layer immediately.  In all convergence plots and layer tables, points are reported every twentieth iteration or episode, with the final endpoint included explicitly, so that the figure remains self-contained and the manuscript does not depend on external graphics files.
+
+In the two-objective case we use $\mu=10$ points and the quadratic map
+\[
+ f_1(x)=1-\frac{(x_1-1)^2+(x_2-1)^2}{2},\qquad
+ f_2(x)=1-\frac{x_1^2+x_2^2}{2}.
+\]
+Its efficient set is the diagonal segment $x_1=x_2=t$, $0\le t\le 1$, and the Pareto front is the curve $(2t-t^2,1-t^2)$.  The initial points are deliberately placed off this diagonal, which produces several nondomination layers.  The simplex-constrained three-objective run uses the supersphere benchmark with $\gamma=1$ and a perturbed Das--Dennis grid with $H=4$, hence $\mu=15$ points.  In this case the initial set is already on the Pareto-front surface and all points remain mutually nondominated; the convergence therefore consists mainly of redistribution on the front.  The layered-start three-objective run also uses $\mu=15$ points, but samples the initial decisions in $[-0.25,1.25]^3$ and projects onto $[-0.4,1.4]^3$.  It uses the same layer weight $\varepsilon=10^{-3}$ as the other convergence traces.  The sampled layer profile evolves from $8+5+2$ through $11+4$ and reaches a single nondominated layer only after several ascent steps.
+
+The 500-episode variants replace the previous small one-point stochastic restart by a larger backtracking perturbation strategy.  When the optimized layered indicator grows by less than $5\cdot 10^{-3}$ over a ten-episode window, several points are perturbed simultaneously with step length about $0.16$.  The perturbed state is allowed to have a temporarily lower indicator value; after this backtracking move, the deterministic gradient ascent continues until the next stagnation.  To avoid reporting a run that ends immediately after a random move, perturbations are disabled during the final ten episodes.  With the fixed seed used here, each of the four recovery runs makes $38$ accepted perturbation/backtracking moves.  The hypervolume runs use exactly the same starting clouds and recovery rule as the magnitude runs, but replace the front contribution by the ordinary anchored hypervolume of each layer.
+
+As a gradient-free reference, we also use a projected stochastic hillclimber.  Starting from the same approximation set and feasible projection, it repeatedly selects one point, perturbs it in a random unit direction, projects the whole set back to the feasible domain, and accepts the trial set only if the chosen layered indicator does not decrease.  Failed trials shrink the step size, while stagnation can trigger the same recovery logic as in the gradient runs.  Thus the method is an accept--reject baseline for the same nonsmooth scalar objective rather than a different quality indicator; Algorithm~\ref{alg:stochastic-reference} gives the complete pseudocode and the source-code reference is listed in the reproducibility paragraph.
+
+The CPU times in Table~\ref{tab:convergence-growth-summary} are process CPU seconds measured by the reproduction script on the execution machine; they are intended as order-of-magnitude reproducibility information rather than hardware-independent benchmark times. We do not repeat the simplex-constrained $H=4$, $\mu=15$ supersphere view here, since the corresponding final point-set comparison for $\gamma=1$ is already shown in Figure~\ref{fig:supersphere-3d-comparison}. The convergence section therefore keeps only the layered-start three-objective view in Figure~\ref{fig:convergence-layered-start-3d}, which is the nonredundant case: it starts with several dominated layers and visibly collapses toward a single nondominated layer.
+
+% Automatically generated by reproduce_convergence_behaviour_v17_2026-05-09.py
+% 2-D convergence coordinates: iteration, layered magnitude
+\def\ConvTwoDCoords{(0,1.97331878) (20,2.19574633) (40,2.19838037) (50,2.19841863)}
+% 3-D simplex convergence coordinates: iteration, layered magnitude
+\def\ConvThreeDCoords{(0,3.11901737) (20,3.12556702) (40,3.12567806) (60,3.12617164) (70,3.12720606)}
+% 3-D layered-start convergence coordinates: iteration, layered magnitude
+\def\ConvThreeDFarCoords{(0,2.70274619) (20,3.11784416) (40,3.12890840) (45,3.12922324)}
+% 3-D stochastic-recovery convergence coordinates: iteration, layered magnitude
+\def\ConvThreeDRecoveryCoords{(0,2.70274619) (20,3.04562958) (40,3.11893518) (60,3.12791171) (80,3.12811367) (100,3.12476344) (120,3.12890654) (140,3.12968417) (160,3.12784760) (180,3.11622271) (200,3.12959952) (220,3.12934627) (240,3.12461797) (260,3.13028517) (280,3.12864025) (300,3.12393670) (320,3.13017352) (340,3.12985918) (360,3.12462073) (380,3.13051035) (400,3.12905446) (420,3.11920868) (440,3.13006840) (460,3.12924657) (480,3.12569002) (500,3.13046938)}
+% 3-D H=5 stochastic-recovery convergence coordinates: iteration, layered magnitude
+\def\ConvThreeDHFiveRecoveryCoords{(0,2.90495988) (20,3.10371168) (40,3.13869728) (60,3.14384934) (80,3.13844367) (100,3.14894588) (120,3.14875120) (140,3.14564817) (160,3.14915786) (180,3.14847027) (200,3.14497270) (220,3.14949697) (240,3.14808581) (260,3.14128518) (280,3.14860953) (300,3.14840191) (320,3.14280029) (340,3.14859258) (360,3.14870357) (380,3.14641283) (400,3.14935442) (420,3.14857580) (440,3.14662250) (460,3.14911354) (480,3.14776140) (500,3.14947885)}
+% 3-D stochastic-recovery convergence coordinates: iteration, layered hypervolume
+\def\ConvThreeDRecoveryHVCoords{(0,0.32132036) (20,0.48307414) (40,0.52524590) (60,0.53458691) (80,0.53498151) (100,0.53201535) (120,0.53645556) (140,0.53523517) (160,0.53309439) (180,0.52111251) (200,0.53586040) (220,0.53451946) (240,0.53330018) (260,0.52854448) (280,0.53602285) (300,0.53687158) (320,0.52812616) (340,0.53962708) (360,0.53748633) (380,0.53408084) (400,0.53893944) (420,0.53932694) (440,0.53830488) (460,0.52916295) (480,0.53985183) (500,0.54011399)}
+% 3-D H=5 stochastic-recovery convergence coordinates: iteration, layered hypervolume
+\def\ConvThreeDHFiveRecoveryHVCoords{(0,0.37968340) (20,0.51546271) (40,0.54353179) (60,0.55058093) (80,0.55344252) (100,0.55009590) (120,0.55648747) (140,0.55578910) (160,0.55404943) (180,0.55024567) (200,0.55556353) (220,0.55642369) (240,0.55100839) (260,0.55683829) (280,0.55497091) (300,0.55311968) (320,0.55601889) (340,0.55537905) (360,0.55552702) (380,0.55205886) (400,0.55613011) (420,0.55641686) (440,0.55489360) (460,0.54746989) (480,0.55593468) (500,0.55632008)}
+% 2-D initial and final objective-space sets
+\def\ConvTwoDInitial{(-0.08040,0.95960) (0.18195,0.89195) (0.14235,0.99235) (0.45980,0.87980) (0.23100,0.97100) (0.55715,0.88715) (0.43635,0.88635) (0.65375,0.80375) (0.44880,0.76880) (0.62720,0.66720)}
+\def\ConvTwoDFinal{(0.26304,0.97997) (0.68426,0.80807) (0.02047,0.99989) (0.86221,0.60461) (0.56932,0.88184) (0.92717,0.46690) (0.78014,0.71792) (0.99988,0.02181) (0.43427,0.93857) (0.97574,0.28726)}
+% 2-D sampled paths, each with at most every twentieth point
+\def\ConvTwoDPathA{(-0.08040,0.95960) (0.24211,0.98325) (0.25684,0.98098) (0.26304,0.97997)}
+\def\ConvTwoDPathB{(0.18195,0.89195) (0.56965,0.88159) (0.67407,0.81587) (0.68426,0.80807)}
+\def\ConvTwoDPathC{(0.14235,0.99235) (0.04014,0.99919) (0.01515,0.99994) (0.02047,0.99989)}
+\def\ConvTwoDPathD{(0.45980,0.87980) (0.76819,0.73112) (0.85557,0.61564) (0.86221,0.60461)}
+\def\ConvTwoDPathE{(0.23100,0.97100) (0.45548,0.93131) (0.56037,0.88646) (0.56932,0.88184)}
+\def\ConvTwoDPathF{(0.55715,0.88715) (0.86641,0.59741) (0.92522,0.47215) (0.92717,0.46690)}
+\def\ConvTwoDPathG{(0.43635,0.88635) (0.65441,0.82990) (0.76967,0.72953) (0.78014,0.71792)}
+\def\ConvTwoDPathH{(0.65375,0.80375) (0.99806,0.08610) (0.99982,0.02692) (0.99988,0.02181)}
+\def\ConvTwoDPathI{(0.44880,0.76880) (0.42360,0.94202) (0.42090,0.94287) (0.43427,0.93857)}
+\def\ConvTwoDPathJ{(0.62720,0.66720) (0.94346,0.41898) (0.97492,0.29167) (0.97574,0.28726)}
+% 3-D simplex initial and final objective-space sets
+\def\ConvThreeDInitial{(0.00012,0.00024,1.00000) (0.19104,0.42143,0.94267) (0.25000,0.74968,0.75032) (0.19575,0.93950,0.43129) (0.00000,1.00000,0.00000) (0.43126,0.18541,0.93956) (0.55513,0.56048,0.81712) (0.57161,0.80263,0.57263) (0.43841,0.93720,0.18804) (0.74329,0.24996,0.75662) (0.81388,0.55008,0.57168) (0.75974,0.73998,0.26068) (0.94715,0.17704,0.40693) (0.93130,0.45552,0.19341) (0.99994,0.00750,0.01505)}
+\def\ConvThreeDFinal{(0.06610,0.06610,0.99848) (0.27160,0.37647,0.95082) (0.31160,0.78937,0.70421) (0.25894,0.94964,0.38596) (0.06352,0.99859,0.06352) (0.51521,0.25202,0.90695) (0.46420,0.59849,0.83287) (0.60780,0.82483,0.47268) (0.49025,0.91734,0.24637) (0.71729,0.31895,0.77749) (0.83311,0.46281,0.59882) (0.78150,0.71279,0.31797) (0.95074,0.26985,0.37752) (0.90814,0.51246,0.25134) (0.99842,0.06731,0.06731)}
+% 3-D layered-start initial and final objective-space sets
+\def\ConvThreeDFarInitial{(0.92688,0.37612,0.03290) (-0.84716,0.34796,0.49719) (0.42595,0.61024,0.33143) (0.48400,0.30517,-0.91450) (0.62285,-0.61288,0.43122) (-0.19041,0.84088,0.35830) (0.58438,0.76884,0.17729) (-0.11108,0.70843,0.67328) (0.11755,-0.23001,0.69029) (0.40933,-0.03361,-0.08624) (0.91969,0.47040,0.08967) (0.81800,0.52380,0.20113) (-0.38610,0.21937,0.28621) (0.53409,0.85470,0.48021) (0.84580,0.46122,0.54178)}
+\def\ConvThreeDFarFinal{(0.99840,0.06775,0.06775) (0.26865,0.55069,0.89014) (0.46325,0.90077,0.42776) (0.66931,0.81797,0.29372) (0.83090,0.29272,0.65116) (0.29069,0.83696,0.64237) (0.30592,0.95960,0.30951) (0.37725,0.29945,0.94759) (0.08250,0.08250,0.99760) (0.77214,0.68775,0.46407) (0.94886,0.30599,0.36779) (0.89186,0.54743,0.26537) (0.42860,0.70963,0.76435) (0.04882,0.99918,0.04882) (0.65466,0.34606,0.82346)}
+% 3-D stochastic-recovery initial and final objective-space sets
+\def\ConvThreeDRecoveryInitial{(0.92688,0.37612,0.03290) (-0.84716,0.34796,0.49719) (0.42595,0.61024,0.33143) (0.48400,0.30517,-0.91450) (0.62285,-0.61288,0.43122) (-0.19041,0.84088,0.35830) (0.58438,0.76884,0.17729) (-0.11108,0.70843,0.67328) (0.11755,-0.23001,0.69029) (0.40933,-0.03361,-0.08624) (0.91969,0.47040,0.08967) (0.81800,0.52380,0.20113) (-0.38610,0.21937,0.28621) (0.53409,0.85470,0.48021) (0.84580,0.46122,0.54178)}
+\def\ConvThreeDRecoveryFinal{(0.99874,0.06030,0.06030) (0.52922,0.36219,0.89014) (0.41699,0.76298,0.71469) (0.74032,0.74132,0.40671) (0.85967,0.29165,0.60578) (0.31084,0.95865,0.31085) (0.30874,0.88662,0.55210) (0.05927,0.05927,0.99878) (0.30441,0.30438,0.96060) (0.57825,0.87568,0.27940) (0.94981,0.32563,0.34899) (0.87841,0.57285,0.28111) (0.28786,0.61280,0.85577) (0.05409,0.99896,0.05553) (0.71258,0.41331,0.76579)}
+% 3-D H=5 stochastic-recovery initial and final objective-space sets
+\def\ConvThreeDHFiveRecoveryInitial{(0.92688,0.37612,0.03290) (-0.84716,0.34796,0.49719) (0.42595,0.61024,0.33143) (0.48400,0.30517,-0.91450) (0.62285,-0.61288,0.43122) (-0.19041,0.84088,0.35830) (0.58438,0.76884,0.17729) (-0.11108,0.70843,0.67328) (0.11755,-0.23001,0.69029) (0.40933,-0.03361,-0.08624) (0.91969,0.47040,0.08967) (0.81800,0.52380,0.20113) (-0.38610,0.21937,0.28621) (0.53409,0.85470,0.48021) (0.84580,0.46122,0.54178) (0.75777,-0.23690,0.35714) (-0.56368,0.55926,0.49094) (0.02314,0.97881,-0.24806) (0.63104,0.35229,0.80238) (0.97907,0.13055,-0.13739) (0.78554,0.47648,0.31484)}
+\def\ConvThreeDHFiveRecoveryFinal{(0.96666,0.27542,0.28991) (0.26849,0.57435,0.87828) (0.23821,0.97731,0.23818) (0.82888,0.64606,0.34941) (0.81150,0.32695,0.67440) (0.58630,0.87182,0.26997) (0.40502,0.93768,0.32353) (0.24682,0.24543,0.97561) (0.38034,0.38547,0.93232) (0.71984,0.77359,0.33443) (0.91562,0.49489,0.24357) (0.66560,0.67354,0.66073) (0.35535,0.71158,0.77807) (0.24792,0.90716,0.51506) (0.56221,0.26351,0.88471) (0.90665,0.25305,0.51581) (0.32371,0.82173,0.66079) (0.03240,0.99964,0.03250) (0.03060,0.03018,0.99969) (0.99939,0.04327,0.04081) (0.69773,0.35673,0.78953)}
+% 3-D hypervolume stochastic-recovery final objective-space sets
+\def\ConvThreeDRecoveryHVFinal{(0.94443,0.35275,0.35272) (0.42621,0.81762,0.64091) (0.49313,0.71507,0.73715) (0.84426,0.40971,0.60386) (0.66377,0.69284,0.64139) (0.36010,0.94164,0.36003) (0.50953,0.87029,0.47741) (0.33999,0.33999,0.94906) (0.48403,0.45855,0.88542) (0.78526,0.66840,0.47030) (0.87993,0.52255,0.42593) (0.67548,0.79391,0.42285) (0.64223,0.42759,0.81639) (0.41633,0.61842,0.83422) (0.73970,0.50232,0.70813)}
+\def\ConvThreeDHFiveRecoveryHVFinal{(0.88824,0.39580,0.51893) (0.68390,0.41133,0.79020) (0.43842,0.73935,0.73342) (0.69721,0.65686,0.64359) (0.83032,0.39225,0.63303) (0.65910,0.80189,0.43842) (0.55187,0.87652,0.38261) (0.42366,0.47075,0.89943) (0.57106,0.38784,0.86628) (0.59613,0.77168,0.60244) (0.90220,0.49771,0.36559) (0.58525,0.60103,0.77900) (0.37615,0.62907,0.83579) (0.39316,0.90626,0.47129) (0.75080,0.48814,0.70244) (0.82275,0.60391,0.48553) (0.76124,0.72170,0.39772) (0.32173,0.95522,0.32174) (0.32763,0.32758,0.95330) (0.95375,0.32663,0.32584) (0.40980,0.83130,0.62563)}
+
+\begin{figure}[htbp]
+\centering
+\begin{tikzpicture}
+\begin{axis}[
+  width=0.64\linewidth,
+  height=0.46\linewidth,
+  view={135}{27},
+  xlabel={$F_1$}, ylabel={$F_2$}, zlabel={$F_3$},
+  xmin=0,xmax=1,ymin=0,ymax=1,zmin=0,zmax=1,
+  xtick={0,1}, ytick={0,1}, ztick={0,1},
+  tick label style={font=\scriptsize},
+  label style={font=\scriptsize},
+  title={layered-start 3-D box run, $\gamma=1$, $\mu=15$},
+  title style={font=\small},
+]
+\addplot3[surf,shader=flat,opacity=0.16,samples=13,samples y=13,domain=0:1,y domain=0:1,draw=blue!30,fill opacity=0.16]
+({1-((((x-1)^2+((1-x)*y)^2+((1-x)*(1-y))^2)/2)^1.0)},
+ {1-(((x^2+(((1-x)*y)-1)^2+((1-x)*(1-y))^2)/2)^1.0)},
+ {1-(((x^2+((1-x)*y)^2+(((1-x)*(1-y))-1)^2)/2)^1.0)});
+\addplot3[only marks,mark=triangle*,mark size=1.15pt,gray!70!black] coordinates {\ConvThreeDFarInitial};
+\addplot3[only marks,mark=*,mark size=1.45pt,red!80!black] coordinates {\ConvThreeDFarFinal};
+\end{axis}
+\end{tikzpicture}
+\caption{Layered-start three-objective run in objective space.  The gray triangles are the initial objective vectors produced by random decision points sampled mildly outside the natural front range, from $[-0.25,1.25]^3$ and then projected to $[-0.4,1.4]^3$.  The red circles are the final points after $45$ projected ascent iterations.  The layer profile is initially $8+5+2$, then $11+4$, and becomes a single nondominated layer only after several ascent steps.}
+\label{fig:convergence-layered-start-3d}
+\end{figure}
+
+\begin{figure}[htbp]
+\centering
+\begin{minipage}{0.32\linewidth}
+\centering
+\begin{tikzpicture}
+\begin{axis}[
+  width=\linewidth,
+  height=0.70\linewidth,
+  xlabel={iteration}, ylabel={layered magnitude},
+  tick label style={font=\scriptsize},
+  label style={font=\scriptsize},
+  title={2-D curved front},
+  title style={font=\small},
+]
+\addplot[mark=*,mark size=1.2pt,thick] coordinates {\ConvTwoDCoords};
+\end{axis}
+\end{tikzpicture}
+\end{minipage}\hfill
+\begin{minipage}{0.32\linewidth}
+\centering
+\begin{tikzpicture}
+\begin{axis}[
+  width=\linewidth,
+  height=0.70\linewidth,
+  xlabel={iteration}, ylabel={layered magnitude},
+  tick label style={font=\scriptsize},
+  label style={font=\scriptsize},
+  title={3-D simplex},
+  title style={font=\small},
+]
+\addplot[mark=*,mark size=1.2pt,thick] coordinates {\ConvThreeDCoords};
+\end{axis}
+\end{tikzpicture}
+\end{minipage}\hfill
+\begin{minipage}{0.32\linewidth}
+\centering
+\begin{tikzpicture}
+\begin{axis}[
+  width=\linewidth,
+  height=0.70\linewidth,
+  xlabel={iteration}, ylabel={layered magnitude},
+  tick label style={font=\scriptsize},
+  label style={font=\scriptsize},
+  title={3-D layered start},
+  title style={font=\small},
+]
+\addplot[mark=*,mark size=1.2pt,thick] coordinates {\ConvThreeDFarCoords};
+\end{axis}
+\end{tikzpicture}
+\end{minipage}
+\caption{Layered magnitude growth for the three baseline representative runs.  Only every twentieth recorded iteration is plotted, with the final endpoint added when it is not a multiple of twenty.  The layered-start three-objective run shows the largest growth because several points are initially dominated, but the initial cloud is only mildly outside the natural Pareto-front range.}
+\label{fig:convergence-growth}
+\end{figure}
+
+
+
+\begin{figure}[htbp]
+\centering
+\begin{minipage}{0.48\linewidth}
+\centering
+\begin{tikzpicture}
+\begin{axis}[
+  width=\linewidth,
+  height=0.72\linewidth,
+  xlabel={episode}, ylabel={layered magnitude},
+  tick label style={font=\scriptsize},
+  label style={font=\scriptsize},
+  title={magnitude-optimized runs},
+  title style={font=\small},
+]
+\addplot[mark=*,mark size=1.0pt,thick] coordinates {\ConvThreeDRecoveryCoords};
+\addplot[mark=square*,mark size=0.95pt,thick,densely dashed] coordinates {\ConvThreeDHFiveRecoveryCoords};
+\end{axis}
+\end{tikzpicture}
+\end{minipage}\hfill
+\begin{minipage}{0.48\linewidth}
+\centering
+\begin{tikzpicture}
+\begin{axis}[
+  width=\linewidth,
+  height=0.72\linewidth,
+  xlabel={episode}, ylabel={layered hypervolume},
+  tick label style={font=\scriptsize},
+  label style={font=\scriptsize},
+  title={hypervolume-optimized runs},
+  title style={font=\small},
+]
+\addplot[mark=triangle*,mark size=1.0pt,thick] coordinates {\ConvThreeDRecoveryHVCoords};
+\addplot[mark=diamond*,mark size=0.95pt,thick,densely dashed] coordinates {\ConvThreeDHFiveRecoveryHVCoords};
+\end{axis}
+\end{tikzpicture}
+\end{minipage}
+
+\caption{Longer 500-episode 3-D layered-start runs with stagnation recovery.  The left panel optimizes layered magnitude and the right panel optimizes layered hypervolume.  In both panels, the solid curve is the $H=4$ budget with $\mu=15$ and the dashed curve is the $H=5$ budget with $\mu=21$.  The plotted curves use every twentieth recorded episode and include the endpoint at episode 500.  After a ten-episode window with indicator growth below $5\cdot 10^{-3}$, the algorithm applies a larger multi-point perturbation, allows a temporary backtracking drop in the optimized indicator, and then resumes gradient ascent.  Perturbations are disabled in the final ten episodes.}
+\label{fig:convergence-stochastic-recovery}
+\end{figure}
+
+
+\begin{figure}[htbp]
+\centering
+\begin{minipage}{0.48\linewidth}
+\centering
+\begin{tikzpicture}
+\begin{axis}[
+  width=\linewidth,
+  height=0.78\linewidth,
+  view={135}{27},
+  xlabel={$F_1$}, ylabel={$F_2$}, zlabel={$F_3$},
+  xmin=0,xmax=1,ymin=0,ymax=1,zmin=0,zmax=1,
+  xtick={0,1}, ytick={0,1}, ztick={0,1},
+  tick label style={font=\scriptsize},
+  label style={font=\scriptsize},
+  title={$H=4$, $\mu=15$, 500 episodes},
+  title style={font=\small},
+]
+\addplot3[surf,shader=flat,opacity=0.16,samples=13,samples y=13,domain=0:1,y domain=0:1,draw=blue!30,fill opacity=0.16]
+({1-((((x-1)^2+((1-x)*y)^2+((1-x)*(1-y))^2)/2)^1.0)},
+ {1-(((x^2+(((1-x)*y)-1)^2+((1-x)*(1-y))^2)/2)^1.0)},
+ {1-(((x^2+((1-x)*y)^2+(((1-x)*(1-y))-1)^2)/2)^1.0)});
+\addplot3[only marks,mark=*,mark size=1.25pt,red!80!black] coordinates {\ConvThreeDRecoveryFinal};
+\addplot3[only marks,mark=triangle*,mark size=1.25pt,black] coordinates {\ConvThreeDRecoveryHVFinal};
+\end{axis}
+\end{tikzpicture}
+\end{minipage}\hfill
+\begin{minipage}{0.48\linewidth}
+\centering
+\begin{tikzpicture}
+\begin{axis}[
+  width=\linewidth,
+  height=0.78\linewidth,
+  view={135}{27},
+  xlabel={$F_1$}, ylabel={$F_2$}, zlabel={$F_3$},
+  xmin=0,xmax=1,ymin=0,ymax=1,zmin=0,zmax=1,
+  xtick={0,1}, ytick={0,1}, ztick={0,1},
+  tick label style={font=\scriptsize},
+  label style={font=\scriptsize},
+  title={$H=5$, $\mu=21$, 500 episodes},
+  title style={font=\small},
+]
+\addplot3[surf,shader=flat,opacity=0.16,samples=13,samples y=13,domain=0:1,y domain=0:1,draw=blue!30,fill opacity=0.16]
+({1-((((x-1)^2+((1-x)*y)^2+((1-x)*(1-y))^2)/2)^1.0)},
+ {1-(((x^2+(((1-x)*y)-1)^2+((1-x)*(1-y))^2)/2)^1.0)},
+ {1-(((x^2+((1-x)*y)^2+(((1-x)*(1-y))-1)^2)/2)^1.0)});
+\addplot3[only marks,mark=*,mark size=1.05pt,red!80!black] coordinates {\ConvThreeDHFiveRecoveryFinal};
+\addplot3[only marks,mark=triangle*,mark size=1.05pt,black] coordinates {\ConvThreeDHFiveRecoveryHVFinal};
+\end{axis}
+\end{tikzpicture}
+\end{minipage}
+\caption{Final objective-space approximation sets for the 500-episode recovery runs.  The transparent blue surface is the analytic supersphere Pareto front for $\gamma=1$.  Red circles are the final sets obtained by optimizing layered magnitude, and black triangles are the final sets obtained by optimizing layered hypervolume.  The hypervolume-optimized sets move more strongly toward balanced interior volume, while the magnitude-optimized sets retain more emphasis on edge and face contributions.}
+\label{fig:convergence-recovery-final-sets}
+\end{figure}
+
+
+
+
+\begin{table}[htbp]
+\centering
+\small
+\setlength{\tabcolsep}{3pt}
+\begin{tabular}{llrrrrrr}
+\hline
+case & crit. & $\mu$ & iters & CPU [s] & value$_0$ & value$_f$ & growth \\
+\hline
+curved 2-D front & Mag & 10 & 50 & 2.70 & 1.973319 & 2.198419 & $+0.225100$ $(+11.41\%)$ \\
+3-D supersphere, $\gamma=1$, $H=4$ & Mag & 15 & 70 & 0.50 & 3.119017 & 3.127206 & $+0.008189$ $(+0.26\%)$ \\
+3-D layered box, $\gamma=1$ & Mag & 15 & 45 & 0.13 & 2.702746 & 3.129223 & $+0.426477$ $(+15.78\%)$ \\
+3-D recovery box, $\gamma=1$ & Mag & 15 & 500 & 1.75 & 2.702746 & 3.130469 & $+0.427723$ $(+15.83\%)$ \\
+3-D recovery box, $\gamma=1$, $H=5$ & Mag & 21 & 500 & 3.12 & 2.904960 & 3.149479 & $+0.244519$ $(+8.42\%)$ \\
+3-D recovery box, $\gamma=1$ & HV & 15 & 500 & 1.52 & 0.321320 & 0.540114 & $+0.218794$ $(+68.09\%)$ \\
+3-D recovery box, $\gamma=1$, $H=5$ & HV & 21 & 500 & 2.66 & 0.379683 & 0.556320 & $+0.176637$ $(+46.52\%)$ \\
+\hline
+\end{tabular}
+\caption{Overall optimized-indicator growth in the convergence runs.  Rows marked Mag report layered magnitude; rows marked HV report layered hypervolume.  The simplex-constrained 3-D run starts already on the front, whereas the layered-start box runs begin with several dominated layers and therefore have a much larger indicator increase.  The four recovery rows use the same multi-point backtracking perturbation rule for 500 episodes.  CPU time is reported in process seconds measured by the reproduction script on the execution machine.}
+\label{tab:convergence-growth-summary}
+\end{table}
+
+
+
+
+
+\begin{table}[htbp]
+\centering
+\small
+\setlength{\tabcolsep}{4pt}
+\begin{tabular}{lrrrl}
+\hline
+case & $\mu$ & iter. & $\Mag^\ell$ & layer sizes \\
+\hline
+2-D curved front & 10 & 0 & 1.973319 & $4+5+1$ \\
+2-D curved front & 10 & 20 & 2.195746 & $10$ \\
+2-D curved front & 10 & 40 & 2.198380 & $10$ \\
+2-D curved front & 10 & 50 & 2.198419 & $10$ \\
+3-D supersphere & 15 & 0 & 3.119017 & $15$ \\
+3-D supersphere & 15 & 20 & 3.125567 & $15$ \\
+3-D supersphere & 15 & 40 & 3.125678 & $15$ \\
+3-D supersphere & 15 & 60 & 3.126172 & $15$ \\
+3-D supersphere & 15 & 70 & 3.127206 & $15$ \\
+3-D layered box & 15 & 0 & 2.702746 & $8+5+2$ \\
+3-D layered box & 15 & 20 & 3.117844 & $15$ \\
+3-D layered box & 15 & 40 & 3.128908 & $15$ \\
+3-D layered box & 15 & 45 & 3.129223 & $15$ \\
+\hline
+\end{tabular}
+\caption{Layer-size snapshots for the baseline convergence runs.  Rows are reported every twentieth iteration, with the endpoint included explicitly.  The notation $8+5+2$ means eight points in the first nondominated layer, five points in the second layer, and two points in the third.}
+\label{tab:convergence-layer-snapshots}
+\end{table}
+
+\begin{table}[htbp]
+\centering
+\small
+\setlength{\tabcolsep}{4pt}
+\begin{tabular}{rrrrl}
+\hline
+iter. & $\Mag^\ell$ $(H=4)$ & layers $(H=4)$ & $\Mag^\ell$ $(H=5)$ & layers $(H=5)$ \\
+\hline
+0 & 2.702746 & $8+5+2$ & 2.904960 & $11+8+2$ \\
+20 & 3.045630 & $11+4$ & 3.103712 & $17+4$ \\
+40 & 3.118935 & $15$ & 3.138697 & $20+1$ \\
+60 & 3.127912 & $15$ & 3.143849 & $21$ \\
+80 & 3.128114 & $15$ & 3.138444 & $21$ \\
+100 & 3.124763 & $15$ & 3.148946 & $21$ \\
+120 & 3.128907 & $15$ & 3.148751 & $21$ \\
+140 & 3.129684 & $15$ & 3.145648 & $21$ \\
+160 & 3.127848 & $15$ & 3.149158 & $21$ \\
+180 & 3.116223 & $15$ & 3.148470 & $21$ \\
+200 & 3.129600 & $15$ & 3.144973 & $21$ \\
+220 & 3.129346 & $15$ & 3.149497 & $21$ \\
+240 & 3.124618 & $15$ & 3.148086 & $21$ \\
+260 & 3.130285 & $15$ & 3.141285 & $21$ \\
+280 & 3.128640 & $15$ & 3.148610 & $21$ \\
+300 & 3.123937 & $15$ & 3.148402 & $21$ \\
+320 & 3.130174 & $15$ & 3.142800 & $21$ \\
+340 & 3.129859 & $15$ & 3.148593 & $21$ \\
+360 & 3.124621 & $15$ & 3.148704 & $21$ \\
+380 & 3.130510 & $15$ & 3.146413 & $21$ \\
+400 & 3.129054 & $15$ & 3.149354 & $21$ \\
+420 & 3.119209 & $15$ & 3.148576 & $21$ \\
+440 & 3.130068 & $15$ & 3.146622 & $21$ \\
+460 & 3.129247 & $15$ & 3.149114 & $21$ \\
+480 & 3.125690 & $15$ & 3.147761 & $21$ \\
+500 & 3.130469 & $15$ & 3.149479 & $21$ \\
+\hline
+\end{tabular}
+\caption{Layer-size snapshots for the 500-episode recovery runs, sampled every twentieth episode.  The $H=4$ run uses $\mu=15$ points and the $H=5$ run uses $\mu=21$ points.  Both runs start with multiple layers and then reach a single nondominated layer.}
+\label{tab:convergence-recovery-layer-snapshots}
+\end{table}
+
+\begin{table}[htbp]
+\centering
+\small
+\setlength{\tabcolsep}{4pt}
+\begin{tabular}{rrrrl}
+\hline
+iter. & $\HV^\ell$ $(H=4)$ & layers $(H=4)$ & $\HV^\ell$ $(H=5)$ & layers $(H=5)$ \\
+\hline
+0 & 0.321320 & $8+5+2$ & 0.379683 & $11+8+2$ \\
+20 & 0.483074 & $11+4$ & 0.515463 & $16+5$ \\
+40 & 0.525246 & $13+1+1$ & 0.543532 & $18+2+1$ \\
+60 & 0.534587 & $14+1$ & 0.550581 & $20+1$ \\
+80 & 0.534982 & $14+1$ & 0.553443 & $20+1$ \\
+100 & 0.532015 & $14+1$ & 0.550096 & $21$ \\
+120 & 0.536456 & $14+1$ & 0.556487 & $21$ \\
+140 & 0.535235 & $14+1$ & 0.555789 & $21$ \\
+160 & 0.533094 & $14+1$ & 0.554049 & $21$ \\
+180 & 0.521113 & $14+1$ & 0.550246 & $21$ \\
+200 & 0.535860 & $14+1$ & 0.555564 & $21$ \\
+220 & 0.534519 & $14+1$ & 0.556424 & $21$ \\
+240 & 0.533300 & $14+1$ & 0.551008 & $21$ \\
+260 & 0.528544 & $14+1$ & 0.556838 & $21$ \\
+280 & 0.536023 & $14+1$ & 0.554971 & $21$ \\
+300 & 0.536872 & $15$ & 0.553120 & $21$ \\
+320 & 0.528126 & $15$ & 0.556019 & $21$ \\
+340 & 0.539627 & $15$ & 0.555379 & $21$ \\
+360 & 0.537486 & $15$ & 0.555527 & $21$ \\
+380 & 0.534081 & $15$ & 0.552059 & $21$ \\
+400 & 0.538939 & $15$ & 0.556130 & $21$ \\
+420 & 0.539327 & $15$ & 0.556417 & $21$ \\
+440 & 0.538305 & $15$ & 0.554894 & $21$ \\
+460 & 0.529163 & $15$ & 0.547470 & $21$ \\
+480 & 0.539852 & $15$ & 0.555935 & $21$ \\
+500 & 0.540114 & $15$ & 0.556320 & $21$ \\
+\hline
+\end{tabular}
+\caption{Layer-size snapshots for the 500-episode hypervolume-optimized recovery runs, sampled every twentieth episode.  The $H=4$ run uses $\mu=15$ points and the $H=5$ run uses $\mu=21$ points.  These runs use the same starting clouds and perturbation/backtracking strategy as the magnitude-optimized recovery runs, but optimize layered hypervolume.}
+\label{tab:convergence-hv-recovery-layer-snapshots}
+\end{table}
+
+
+
+
+
+
+The traces illustrate the same layer mechanism under both indicators.  In two objectives the first phase is dominated by promotion through nondomination layers: the profile $4+5+1$ has become a single first layer by the first sampled checkpoint at iteration $20$.  In the simplex-constrained supersphere run, all points are mutually nondominated from the beginning and the magnitude increase reflects redistribution on the surface.  In the layered-start box run, several points begin just outside the nondominated range.  The layer profile remains multi-layered initially and reaches a single nondominated layer by the first sampled checkpoint at iteration $20$.  The overall layered magnitude grows by about $15.8\%$ and then continues with a shorter redistribution phase on the front.
+
+The 500-episode variants use the same initial layer structures but replace the small accept-only restart by a larger backtracking perturbation.  The convergence curves therefore show small nonmonotone drops after some stagnation windows; these drops are deliberate and are followed by gradient-only recovery phases.  In the magnitude-optimized $H=4$ run, the final layered magnitude is $3.130469$, slightly above the 45-episode deterministic run.  In the magnitude-optimized $H=5$ run, the larger budget reaches a single nondominated layer and a final value $3.149479$.  The hypervolume-optimized runs show the corresponding behavior for the volume term: the final layered hypervolume values are $0.540114$ for $H=4$ and $0.556320$ for $H=5$.  The absence of perturbations in the last ten episodes ensures that each reported endpoint is produced by a final deterministic polishing phase rather than by a last random move.
+
+
+Figure~\ref{fig:h5-iter30-magnitude-vectorfield} complements the sampled convergence traces with a single instantaneous vector-field snapshot. It shows the $H=5$ magnitude-optimized run at iteration~30, where the layer profile is still $18+3$. The left panel displays the decision-space ascent directions obtained by pulling the layered magnitude gradient back through the objective Jacobians and normalizing rowwise before projection. The right panel shows the corresponding objective-space gradient directions. Thus the figure separates two geometries of the same update: the objective-space arrows show the local layered-magnitude ascent direction, while the decision-space arrows show the feasible pullback direction available to the projected optimizer on the supersphere decision domain.
+
+\begin{figure}[htbp]
+\centering
+% Automatically generated by reproduce_h5_iteration30_magnitude_vectorfield.py
+% H=5, iteration 30, magnitude indicator.
+\begin{tikzpicture}
+\pgfplotsset{
+  vectorfield axis/.style={
+    width=0.48\linewidth,
+    height=0.60\linewidth,
+    view={315}{24},
+    tick label style={font=\scriptsize},
+    label style={font=\scriptsize},
+    title style={font=\small, yshift=-0.5ex},
+    grid=major,
+    grid style={gray!30},
+    axis background/.style={fill=gray!4},
+    axis lines=box,
+    clip=false,
+    every axis plot/.append style={line join=round},
+  }
+}
+\begin{axis}[
+  vectorfield axis,
+  name=decaxis,
+  at={(0cm,0cm)},
+  xlabel={$x_1$}, ylabel={$x_2$}, zlabel={$x_3$},
+  title={Decision space: projected ascent},
+  xmin=-0.45,xmax=1.45,
+  ymin=-0.45,ymax=1.45,
+  zmin=-0.45,zmax=1.45,
+  xtick={-0.25,0,0.5,1.0,1.25},
+  ytick={-0.25,0,0.5,1.0,1.25},
+  ztick={-0.25,0,0.5,1.0,1.25},
+]
+\addplot3[densely dashed, gray!75, line width=0.45pt] coordinates {(1.000000,0.000000,0.000000) (0.000000,1.000000,0.000000) (0.000000,0.000000,1.000000) (1.000000,0.000000,0.000000)};
+\addplot3[only marks, mark=*, mark size=1.70pt, blue!72!black] coordinates {(0.787477,0.106260,0.106255) (-0.054103,0.583594,0.808900) (0.256748,0.532119,0.364538) (0.638732,-0.024963,0.537361) (0.106162,0.787242,0.113055) (0.360319,0.613851,0.025390) (0.039573,0.256997,0.703278) (0.310259,0.119011,0.868606) (0.634533,0.255689,0.109795) (0.527395,0.423782,0.049176) (0.112275,0.632255,0.255470) (0.350227,0.044956,0.604619) (0.668228,0.052694,0.349977) (0.009677,0.580357,0.607562) (0.023285,0.953494,0.023222) (0.033479,0.033004,0.931990) (0.961042,0.019479,0.019479) (0.359471,0.181974,0.397183)};
+\addplot3[only marks, mark=triangle*, mark size=1.95pt, orange!90!black] coordinates {(0.705598,0.657929,-0.050244) (0.765399,0.454995,0.595970) (0.465131,0.742314,0.871534)};
+\draw[-{Latex[length=0.75mm,width=0.60mm]}, blue!70!black, line width=0.24pt, opacity=0.88] (axis cs:0.787477,0.106260,0.106255) -- (axis cs:0.681341,0.159332,0.159343);
+\draw[-{Latex[length=0.75mm,width=0.60mm]}, blue!70!black, line width=0.24pt, opacity=0.88] (axis cs:-0.054103,0.583594,0.808900) -- (axis cs:-0.023493,0.476621,0.741670);
+\draw[-{Latex[length=0.75mm,width=0.60mm]}, blue!70!black, line width=0.24pt, opacity=0.88] (axis cs:0.256748,0.532119,0.364538) -- (axis cs:0.135946,0.485310,0.375297);
+\draw[-{Latex[length=0.75mm,width=0.60mm]}, blue!70!black, line width=0.24pt, opacity=0.88] (axis cs:0.705598,0.657929,-0.050244) -- (axis cs:0.609130,0.583745,-0.004520);
+\draw[-{Latex[length=0.75mm,width=0.60mm]}, blue!70!black, line width=0.24pt, opacity=0.88] (axis cs:0.638732,-0.024963,0.537361) -- (axis cs:0.576625,0.016342,0.430887);
+\draw[-{Latex[length=0.75mm,width=0.60mm]}, blue!70!black, line width=0.24pt, opacity=0.88] (axis cs:0.106162,0.787242,0.113055) -- (axis cs:0.162631,0.676408,0.150834);
+\draw[-{Latex[length=0.75mm,width=0.60mm]}, blue!70!black, line width=0.24pt, opacity=0.88] (axis cs:0.360319,0.613851,0.025390) -- (axis cs:0.451282,0.521017,0.028148);
+\draw[-{Latex[length=0.75mm,width=0.60mm]}, blue!70!black, line width=0.24pt, opacity=0.88] (axis cs:0.039573,0.256997,0.703278) -- (axis cs:0.045942,0.345874,0.608619);
+\draw[-{Latex[length=0.75mm,width=0.60mm]}, blue!70!black, line width=0.24pt, opacity=0.88] (axis cs:0.310259,0.119011,0.868606) -- (axis cs:0.206672,0.062408,0.814146);
+\draw[-{Latex[length=0.75mm,width=0.60mm]}, blue!70!black, line width=0.24pt, opacity=0.88] (axis cs:0.765399,0.454995,0.595970) -- (axis cs:0.686637,0.360362,0.554245);
+\draw[-{Latex[length=0.75mm,width=0.60mm]}, blue!70!black, line width=0.24pt, opacity=0.88] (axis cs:0.634533,0.255689,0.109795) -- (axis cs:0.740564,0.206751,0.052676);
+\draw[-{Latex[length=0.75mm,width=0.60mm]}, blue!70!black, line width=0.24pt, opacity=0.88] (axis cs:0.527395,0.423782,0.049176) -- (axis cs:0.432306,0.512211,0.055375);
+\draw[-{Latex[length=0.75mm,width=0.60mm]}, blue!70!black, line width=0.24pt, opacity=0.88] (axis cs:0.465131,0.742314,0.871534) -- (axis cs:0.386356,0.640507,0.853373);
+\draw[-{Latex[length=0.75mm,width=0.60mm]}, blue!70!black, line width=0.24pt, opacity=0.88] (axis cs:0.112275,0.632255,0.255470) -- (axis cs:0.071975,0.737446,0.190579);
+\draw[-{Latex[length=0.75mm,width=0.60mm]}, blue!70!black, line width=0.24pt, opacity=0.88] (axis cs:0.350227,0.044956,0.604619) -- (axis cs:0.250735,0.063772,0.686150);
+\draw[-{Latex[length=0.75mm,width=0.60mm]}, blue!70!black, line width=0.24pt, opacity=0.88] (axis cs:0.668228,0.052694,0.349977) -- (axis cs:0.569876,0.048000,0.265095);
+\draw[-{Latex[length=0.75mm,width=0.60mm]}, blue!70!black, line width=0.24pt, opacity=0.88] (axis cs:0.009677,0.580357,0.607562) -- (axis cs:0.035722,0.476499,0.533838);
+\draw[-{Latex[length=0.75mm,width=0.60mm]}, blue!70!black, line width=0.24pt, opacity=0.88] (axis cs:0.023285,0.953494,0.023222) -- (axis cs:-0.030003,1.059638,-0.029634);
+\draw[-{Latex[length=0.75mm,width=0.60mm]}, blue!70!black, line width=0.24pt, opacity=0.88] (axis cs:0.033479,0.033004,0.931990) -- (axis cs:-0.017318,-0.013880,1.042088);
+\draw[-{Latex[length=0.75mm,width=0.60mm]}, blue!70!black, line width=0.24pt, opacity=0.88] (axis cs:0.961042,0.019479,0.019479) -- (axis cs:1.067187,-0.033594,-0.033593);
+\draw[-{Latex[length=0.75mm,width=0.60mm]}, blue!70!black, line width=0.24pt, opacity=0.88] (axis cs:0.359471,0.181974,0.397183) -- (axis cs:0.326291,0.177068,0.522781);
+\end{axis}
+\begin{axis}[
+  vectorfield axis,
+  at={(0.55\linewidth,0cm)},
+  anchor=south west,
+  xlabel={$F_1$}, ylabel={$F_2$}, zlabel={$F_3$},
+  title={Objective space: magnitude gradient},
+  xmin=-0.137259, xmax=1.084241,
+  ymin=-0.080000, ymax=1.080000,
+  zmin=-0.098226, zmax=1.081350,
+]
+\addplot3[only marks, mark=*, mark size=0.38pt, blue!45, opacity=0.16] coordinates {(0.000000,0.000000,1.000000) (0.047500,0.097500,0.997500) (0.090000,0.190000,0.990000) (0.127500,0.277500,0.977500) (0.160000,0.360000,0.960000) (0.187500,0.437500,0.937500) (0.210000,0.510000,0.910000) (0.227500,0.577500,0.877500) (0.240000,0.640000,0.840000) (0.247500,0.697500,0.797500) (0.250000,0.750000,0.750000) (0.247500,0.797500,0.697500) (0.240000,0.840000,0.640000) (0.227500,0.877500,0.577500) (0.210000,0.910000,0.510000) (0.187500,0.937500,0.437500) (0.160000,0.960000,0.360000) (0.127500,0.977500,0.277500) (0.090000,0.990000,0.190000) (0.047500,0.997500,0.097500) (0.000000,1.000000,0.000000) (0.097500,0.047500,0.997500) (0.142500,0.142500,0.992500) (0.182500,0.232500,0.982500) (0.217500,0.317500,0.967500) (0.247500,0.397500,0.947500) (0.272500,0.472500,0.922500) (0.292500,0.542500,0.892500) (0.307500,0.607500,0.857500) (0.317500,0.667500,0.817500) (0.322500,0.722500,0.772500) (0.322500,0.772500,0.722500) (0.317500,0.817500,0.667500) (0.307500,0.857500,0.607500) (0.292500,0.892500,0.542500) (0.272500,0.922500,0.472500) (0.247500,0.947500,0.397500) (0.217500,0.967500,0.317500) (0.182500,0.982500,0.232500) (0.142500,0.992500,0.142500) (0.097500,0.997500,0.047500) (0.190000,0.090000,0.990000) (0.232500,0.182500,0.982500) (0.270000,0.270000,0.970000) (0.302500,0.352500,0.952500) (0.330000,0.430000,0.930000) (0.352500,0.502500,0.902500) (0.370000,0.570000,0.870000) (0.382500,0.632500,0.832500) (0.390000,0.690000,0.790000) (0.392500,0.742500,0.742500) (0.390000,0.790000,0.690000) (0.382500,0.832500,0.632500) (0.370000,0.870000,0.570000) (0.352500,0.902500,0.502500) (0.330000,0.930000,0.430000) (0.302500,0.952500,0.352500) (0.270000,0.970000,0.270000) (0.232500,0.982500,0.182500) (0.190000,0.990000,0.090000) (0.277500,0.127500,0.977500) (0.317500,0.217500,0.967500) (0.352500,0.302500,0.952500) (0.382500,0.382500,0.932500) (0.407500,0.457500,0.907500) (0.427500,0.527500,0.877500) (0.442500,0.592500,0.842500) (0.452500,0.652500,0.802500) (0.457500,0.707500,0.757500) (0.457500,0.757500,0.707500) (0.452500,0.802500,0.652500) (0.442500,0.842500,0.592500) (0.427500,0.877500,0.527500) (0.407500,0.907500,0.457500) (0.382500,0.932500,0.382500) (0.352500,0.952500,0.302500) (0.317500,0.967500,0.217500) (0.277500,0.977500,0.127500) (0.360000,0.160000,0.960000) (0.397500,0.247500,0.947500) (0.430000,0.330000,0.930000) (0.457500,0.407500,0.907500) (0.480000,0.480000,0.880000) (0.497500,0.547500,0.847500) (0.510000,0.610000,0.810000) (0.517500,0.667500,0.767500) (0.520000,0.720000,0.720000) (0.517500,0.767500,0.667500) (0.510000,0.810000,0.610000) (0.497500,0.847500,0.547500) (0.480000,0.880000,0.480000) (0.457500,0.907500,0.407500) (0.430000,0.930000,0.330000) (0.397500,0.947500,0.247500) (0.360000,0.960000,0.160000) (0.437500,0.187500,0.937500) (0.472500,0.272500,0.922500) (0.502500,0.352500,0.902500) (0.527500,0.427500,0.877500) (0.547500,0.497500,0.847500) (0.562500,0.562500,0.812500) (0.572500,0.622500,0.772500) (0.577500,0.677500,0.727500) (0.577500,0.727500,0.677500) (0.572500,0.772500,0.622500) (0.562500,0.812500,0.562500) (0.547500,0.847500,0.497500) (0.527500,0.877500,0.427500) (0.502500,0.902500,0.352500) (0.472500,0.922500,0.272500) (0.437500,0.937500,0.187500) (0.510000,0.210000,0.910000) (0.542500,0.292500,0.892500) (0.570000,0.370000,0.870000) (0.592500,0.442500,0.842500) (0.610000,0.510000,0.810000) (0.622500,0.572500,0.772500) (0.630000,0.630000,0.730000) (0.632500,0.682500,0.682500) (0.630000,0.730000,0.630000) (0.622500,0.772500,0.572500) (0.610000,0.810000,0.510000) (0.592500,0.842500,0.442500) (0.570000,0.870000,0.370000) (0.542500,0.892500,0.292500) (0.510000,0.910000,0.210000) (0.577500,0.227500,0.877500) (0.607500,0.307500,0.857500) (0.632500,0.382500,0.832500) (0.652500,0.452500,0.802500) (0.667500,0.517500,0.767500) (0.677500,0.577500,0.727500) (0.682500,0.632500,0.682500) (0.682500,0.682500,0.632500) (0.677500,0.727500,0.577500) (0.667500,0.767500,0.517500) (0.652500,0.802500,0.452500) (0.632500,0.832500,0.382500) (0.607500,0.857500,0.307500) (0.577500,0.877500,0.227500) (0.640000,0.240000,0.840000) (0.667500,0.317500,0.817500) (0.690000,0.390000,0.790000) (0.707500,0.457500,0.757500) (0.720000,0.520000,0.720000) (0.727500,0.577500,0.677500) (0.730000,0.630000,0.630000) (0.727500,0.677500,0.577500) (0.720000,0.720000,0.520000) (0.707500,0.757500,0.457500) (0.690000,0.790000,0.390000) (0.667500,0.817500,0.317500) (0.640000,0.840000,0.240000) (0.697500,0.247500,0.797500) (0.722500,0.322500,0.772500) (0.742500,0.392500,0.742500) (0.757500,0.457500,0.707500) (0.767500,0.517500,0.667500) (0.772500,0.572500,0.622500) (0.772500,0.622500,0.572500) (0.767500,0.667500,0.517500) (0.757500,0.707500,0.457500) (0.742500,0.742500,0.392500) (0.722500,0.772500,0.322500) (0.697500,0.797500,0.247500) (0.750000,0.250000,0.750000) (0.772500,0.322500,0.722500) (0.790000,0.390000,0.690000) (0.802500,0.452500,0.652500) (0.810000,0.510000,0.610000) (0.812500,0.562500,0.562500) (0.810000,0.610000,0.510000) (0.802500,0.652500,0.452500) (0.790000,0.690000,0.390000) (0.772500,0.722500,0.322500) (0.750000,0.750000,0.250000) (0.797500,0.247500,0.697500) (0.817500,0.317500,0.667500) (0.832500,0.382500,0.632500) (0.842500,0.442500,0.592500) (0.847500,0.497500,0.547500) (0.847500,0.547500,0.497500) (0.842500,0.592500,0.442500) (0.832500,0.632500,0.382500) (0.817500,0.667500,0.317500) (0.797500,0.697500,0.247500) (0.840000,0.240000,0.640000) (0.857500,0.307500,0.607500) (0.870000,0.370000,0.570000) (0.877500,0.427500,0.527500) (0.880000,0.480000,0.480000) (0.877500,0.527500,0.427500) (0.870000,0.570000,0.370000) (0.857500,0.607500,0.307500) (0.840000,0.640000,0.240000) (0.877500,0.227500,0.577500) (0.892500,0.292500,0.542500) (0.902500,0.352500,0.502500) (0.907500,0.407500,0.457500) (0.907500,0.457500,0.407500) (0.902500,0.502500,0.352500) (0.892500,0.542500,0.292500) (0.877500,0.577500,0.227500) (0.910000,0.210000,0.510000) (0.922500,0.272500,0.472500) (0.930000,0.330000,0.430000) (0.932500,0.382500,0.382500) (0.930000,0.430000,0.330000) (0.922500,0.472500,0.272500) (0.910000,0.510000,0.210000) (0.937500,0.187500,0.437500) (0.947500,0.247500,0.397500) (0.952500,0.302500,0.352500) (0.952500,0.352500,0.302500) (0.947500,0.397500,0.247500) (0.937500,0.437500,0.187500) (0.960000,0.160000,0.360000) (0.967500,0.217500,0.317500) (0.970000,0.270000,0.270000) (0.967500,0.317500,0.217500) (0.960000,0.360000,0.160000) (0.977500,0.127500,0.277500) (0.982500,0.182500,0.232500) (0.982500,0.232500,0.182500) (0.977500,0.277500,0.127500) (0.990000,0.090000,0.190000) (0.992500,0.142500,0.142500) (0.990000,0.190000,0.090000) (0.997500,0.047500,0.097500) (0.997500,0.097500,0.047500) (1.000000,0.000000,0.000000)};
+\addplot3[only marks, mark=*, mark size=1.70pt, blue!72!black] coordinates {(0.966126,0.284909,0.284904) (-0.053017,0.584680,0.809986) (0.515769,0.791140,0.623559) (0.790053,0.126358,0.688681) (0.284262,0.965341,0.291155) (0.606675,0.860207,0.271746) (0.258466,0.475890,0.922171) (0.377809,0.186561,0.936156) (0.894501,0.515657,0.369763) (0.797317,0.693705,0.319098) (0.373466,0.893447,0.516662) (0.605105,0.299834,0.859497) (0.882333,0.266799,0.564082) (0.156657,0.727337,0.754543) (0.068169,0.998378,0.068106) (0.098071,0.097596,0.996582) (0.998862,0.057299,0.057298) (0.699427,0.521930,0.737139)};
+\addplot3[only marks, mark=triangle*, mark size=1.95pt, orange!90!black] coordinates {(0.738966,0.691298,-0.016876) (0.691381,0.380977,0.521951) (0.201656,0.478840,0.608060)};
+\draw[-{Latex[length=0.75mm,width=0.60mm]}, blue!70!black, line width=0.24pt, opacity=0.88] (axis cs:0.966126,0.284909,0.284904) -- (axis cs:1.048887,0.298614,0.298609);
+\draw[-{Latex[length=0.75mm,width=0.60mm]}, blue!70!black, line width=0.24pt, opacity=0.88] (axis cs:-0.053017,0.584680,0.809986) -- (axis cs:-0.050919,0.623264,0.885695);
+\draw[-{Latex[length=0.75mm,width=0.60mm]}, blue!70!black, line width=0.24pt, opacity=0.88] (axis cs:0.515769,0.791140,0.623559) -- (axis cs:0.534481,0.856798,0.674194);
+\draw[-{Latex[length=0.75mm,width=0.60mm]}, blue!70!black, line width=0.24pt, opacity=0.88] (axis cs:0.738966,0.691298,-0.016876) -- (axis cs:0.798260,0.751641,-0.008638);
+\draw[-{Latex[length=0.75mm,width=0.60mm]}, blue!70!black, line width=0.24pt, opacity=0.88] (axis cs:0.790053,0.126358,0.688681) -- (axis cs:0.858753,0.129286,0.738649);
+\draw[-{Latex[length=0.75mm,width=0.60mm]}, blue!70!black, line width=0.24pt, opacity=0.88] (axis cs:0.284262,0.965341,0.291155) -- (axis cs:0.298487,1.047933,0.305337);
+\draw[-{Latex[length=0.75mm,width=0.60mm]}, blue!70!black, line width=0.24pt, opacity=0.88] (axis cs:0.606675,0.860207,0.271746) -- (axis cs:0.656030,0.929334,0.275004);
+\draw[-{Latex[length=0.75mm,width=0.60mm]}, blue!70!black, line width=0.24pt, opacity=0.88] (axis cs:0.258466,0.475890,0.922171) -- (axis cs:0.263230,0.508244,1.000628);
+\draw[-{Latex[length=0.75mm,width=0.60mm]}, blue!70!black, line width=0.24pt, opacity=0.88] (axis cs:0.377809,0.186561,0.936156) -- (axis cs:0.395253,0.190800,1.019238);
+\draw[-{Latex[length=0.75mm,width=0.60mm]}, blue!70!black, line width=0.24pt, opacity=0.88] (axis cs:0.691381,0.380977,0.521951) -- (axis cs:0.752688,0.393576,0.579464);
+\draw[-{Latex[length=0.75mm,width=0.60mm]}, blue!70!black, line width=0.24pt, opacity=0.88] (axis cs:0.894501,0.515657,0.369763) -- (axis cs:0.975127,0.541266,0.378049);
+\draw[-{Latex[length=0.75mm,width=0.60mm]}, blue!70!black, line width=0.24pt, opacity=0.88] (axis cs:0.797317,0.693705,0.319098) -- (axis cs:0.854848,0.755904,0.325922);
+\draw[-{Latex[length=0.75mm,width=0.60mm]}, blue!70!black, line width=0.24pt, opacity=0.88] (axis cs:0.201656,0.478840,0.608060) -- (axis cs:0.205653,0.499067,0.690521);
+\draw[-{Latex[length=0.75mm,width=0.60mm]}, blue!70!black, line width=0.24pt, opacity=0.88] (axis cs:0.373466,0.893447,0.516662) -- (axis cs:0.384357,0.973540,0.542957);
+\draw[-{Latex[length=0.75mm,width=0.60mm]}, blue!70!black, line width=0.24pt, opacity=0.88] (axis cs:0.605105,0.299834,0.859497) -- (axis cs:0.644505,0.305772,0.934580);
+\draw[-{Latex[length=0.75mm,width=0.60mm]}, blue!70!black, line width=0.24pt, opacity=0.88] (axis cs:0.882333,0.266799,0.564082) -- (axis cs:0.958048,0.272908,0.602227);
+\draw[-{Latex[length=0.75mm,width=0.60mm]}, blue!70!black, line width=0.24pt, opacity=0.88] (axis cs:0.156657,0.727337,0.754543) -- (axis cs:0.162118,0.783012,0.818538);
+\draw[-{Latex[length=0.75mm,width=0.60mm]}, blue!70!black, line width=0.24pt, opacity=0.88] (axis cs:0.068169,0.998378,0.068106) -- (axis cs:0.069526,1.083356,0.069463);
+\draw[-{Latex[length=0.75mm,width=0.60mm]}, blue!70!black, line width=0.24pt, opacity=0.88] (axis cs:0.098071,0.097596,0.996582) -- (axis cs:0.100517,0.100042,1.081512);
+\draw[-{Latex[length=0.75mm,width=0.60mm]}, blue!70!black, line width=0.24pt, opacity=0.88] (axis cs:0.998862,0.057299,0.057298) -- (axis cs:1.083840,0.058651,0.058651);
+\draw[-{Latex[length=0.75mm,width=0.60mm]}, blue!70!black, line width=0.24pt, opacity=0.88] (axis cs:0.699427,0.521930,0.737139) -- (axis cs:0.745761,0.546535,0.804017);
+\end{axis}
+\end{tikzpicture}
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+\caption{Instantaneous vector-field snapshot for the $H=5$ layered-magnitude run at iteration~30. The left panel shows the projected ascent directions in decision space for the 21 decision vectors, and the right panel shows the corresponding layered-magnitude gradient directions in objective space. Blue circular markers indicate points in the first nondomination layer and orange triangular markers indicate the second layer. In the decision-space panel, the dashed triangle indicates the simplex used as reference for the supersphere construction; in the objective-space panel, the pale blue point cloud indicates the image of a coarse simplex grid on the supersphere front.}
+\label{fig:h5-iter30-magnitude-vectorfield}
+\end{figure}
+
+\section{Discussion}
+The examples illustrate a consistent computational picture for nonsmooth set-gradient ascent of layered indicators.  In the biobjective examples the leading first-layer term drives points toward the Pareto front.  Once the points have reached that front, the lower layers disappear and the remaining task is to distribute the points along it.  In the perturbed ten-point quadratic example this behavior is especially visible: in decision space the trajectories bend toward the efficient diagonal, while in objective space their images bend toward the curved front.  The short-range repulsion term is numerically useful because it resolves temporary near-collisions and produces separated front configurations without changing the leading-order preference for first-front quality.
+
+The regularity results clarify the mathematical status of this procedure.  On chambers with fixed layer membership one has standard Lipschitz control and a piecewise-smooth structure, so Clarke-type language is natural there.  Across layer switches, however, the hard-layer finite-$\varepsilon$ scalarization can jump, and the counterexample shows that one should not expect a global locally Lipschitz theory for this exact scalar surrogate.  For that reason, the projected finite-difference and indicator-gradient methods used in the experiments are best interpreted as practical computational schemes informed by nonsmooth geometry rather than as fully analyzed subgradient algorithms.
+
+The comparison between hypervolume and magnitude is also informative.  Layered hypervolume keeps the familiar volume-driven interpretation but extends it to deeper nondomination layers.  Layered magnitude contains hypervolume as its highest-dimensional term and adds lower-dimensional geometric contributions such as extent and projected area.  In the three-objective supersphere experiments this difference is visible in the final approximation sets: hypervolume-optimized runs emphasize balanced dominated volume, while magnitude-optimized runs retain more boundary and face information.  Both indicators fit the same nonsmooth set-gradient framework.
+
+From a numerical perspective, the method is already effective on small but nontrivial approximation sets.  The ten-point quadratic example is useful because the front is genuinely curved and the trajectories are visibly nonlinear in both decision and objective space.  The supersphere benchmark is useful because the Pareto front is known analytically, the curvature can be tuned by the bulge parameter, and both hypervolume and magnitude can be evaluated in the same coordinate system.  Projection also makes constraint handling transparent: for the triangle problem the feasible region is treated directly in objective space, for the quadratic problem the box constraint is enforced by coordinatewise clipping, and for the supersphere examples the decision set is either the simplex or a box.
+
+\paragraph{Availability and reproducibility.}
+For submission, the computational material should be provided as a small self-contained package. In particular, the public repository should contain the exact script used for the perturbed ten-point quadratic example, the parameter defaults stated in the text, the CSV exports from which the path figures are generated, and a short README explaining how projection is implemented for each example.  The three-objective results in Tables~\ref{tab:three-d-hv-vs-mag} and~\ref{tab:three-d-pointset-sensitivity}, and Figure~\ref{fig:supersphere-3d-comparison} is reproduced by the companion script \texttt{reproduce\_supersphere3d\_v06\_2026-05-09.py}, which calls the single-file three-dimensional runner and writes the CSV, LaTeX table, and coordinate snippets used in the manuscript.  The convergence traces in Section~\ref{sec:convergence-behaviour} are reproduced by the self-contained script \texttt{reproduce\_convergence\_behaviour\_v17\_2026-05-09.py} and its accompanying \texttt{README.md}; the script uses Numba-accelerated benchmark evaluations when Numba is available and otherwise falls back to pure NumPy.  The instantaneous vector-field snapshot in Figure~\ref{fig:h5-iter30-magnitude-vectorfield} is reproduced by the companion script \texttt{reproduce\_h5\_iteration30\_magnitude\_vectorfield.py}, which writes the PNG preview and the vector-field figure asset used in the manuscript.  The same reproducibility package should also include the source code of the projected stochastic hillclimbing reference optimizer corresponding to Algorithm~\ref{alg:stochastic-reference}, so that the accept--reject baseline can be run from the same objective functions, projection operators, and layered-indicator routines as the gradient-based experiments. A lightweight interactive version of the examples is available as a Trinket at \url{https://trinket.io/library/trinkets/992765676638}. A fuller reproducibility package, including the ascent implementation and the constrained test problems referenced in the text, can accompany the manuscript at \url{https://github.com/emmerichmtm/ClarkeConeAscentOfDominatedSetMagnitude}.
+
+\section{Future work}
+Several extensions of the present layered-ascent framework are natural.  First, the present construction handles dominated points by assigning them to deeper nondomination layers with decreasing weights.  This should be compared systematically with earlier mechanisms for steering dominated points in hypervolume-indicator gradient ascent, especially the biobjective study of dominated-point steering in HV-gradient methods~\cite{wangrendeutzemmerich2016}.  Such a comparison may clarify when explicit dominated-layer ascent is preferable to steering terms that act within a conventional hypervolume-gradient framework.
+
+Second, the numerical treatment of step sizes deserves a more systematic analysis.  The implementation used here combines normalization, projection, accept--reject tests, and stagnation recovery.  A more principled version could build directly on step-size control strategies developed for hypervolume-indicator gradient ascent~\cite{wangdeutzbackemmerich2017}, adapted to the discontinuities introduced by hard nondomination layers and to the lower-dimensional terms in the magnitude indicator.
+
+Third, higher-order information is a promising direction.  Efficient computation of hypervolume derivatives and Hessian entries has been studied analytically, including complexity and sparsity properties of the hypervolume-indicator Hessian~\cite{deutzemmerichwang2023hessian}.  Combining those derivative formulae with the layered construction could lead to active-set-aware second-order approximations for each fixed layer chamber.  A full second-order layered method would also connect naturally to the hypervolume Newton method for constrained multiobjective optimization~\cite{wangemmerichdeutzhernandezschutze2023newton}.  In particular, one could investigate a layered Newton or quasi-Newton ascent method in which first-layer curvature information is dominant and deeper layers provide controlled correction directions for dominated points.
+
+\section{Conclusion}
+Layered set indicators give a simple way to incorporate dominated points into a unary quality objective without allowing them to outweigh the first nondominated front.  This paper has studied the construction for two base indicators: anchored hypervolume and dominated-set magnitude.  The lexicographic and infinitesimal-style formulations encode the same hierarchy in the magnitude case, while the finite-$\varepsilon$ surrogate makes both hypervolume and magnitude versions numerically accessible.
+
+In the biobjective magnitude setting, the resulting optimization problem is naturally piecewise smooth: on chambers with fixed layer membership one has Lipschitz control on bounded sets, whereas across layer switches the hard-layer scalarization may be discontinuous.  This regularity picture explains why a nonsmooth set-gradient viewpoint is appropriate and also why the numerical methods used in the experiments should be described as projected finite-difference or indicator-gradient ascent schemes rather than as fully analyzed generalized-gradient methods.
+
+The computational illustrations show that this simple framework is already effective on representative small examples, including a ten-point problem with a genuinely curved Pareto front and three-objective supersphere examples comparing layered hypervolume and layered magnitude.  Taken together, the analytic observations and numerical experiments suggest that nonsmooth set-gradient ascent of layered hypervolume and magnitude indicators is a useful framework for studying Pareto-front approximation beyond the first nondominated front.
+
+
+\appendix
+
+\section{Reference pseudocode for projected set-gradient ascent}
+\label{app:algorithm}
+
+This appendix records the numerical core used in the paper without any interactive or display-related components.  The same template applies to layered magnitude and layered hypervolume; only the base layer indicator is changed. In particular, it omits plotting, keyboard control, initialization menus, and demo-specific bookkeeping, and keeps only the ascent iteration itself.
+
+\subsection*{Symbols and default implementation constants}
+We use the following notation.
+\begin{description}[leftmargin=2.8cm,style=nextline]
+\item[$\mu$] number of points in the approximation set.
+\item[$d$] dimension of the state space of a single point. In the biobjective examples one has $d=2$; in the supersphere benchmark one has $d=3$.
+\item[$\Xi\subseteq \mathbb{R}^{d}$] feasible region for one point, with product feasible set $\Xi^{\mu}$.
+\item[$\Pi_{\Xi^{\mu}}$] Euclidean projection onto $\Xi^{\mu}$. For a box constraint this is coordinatewise clipping.
+\item[$X=(x^{(1)},\dots,x^{(\mu)})\in \Xi^{\mu}$] current state configuration.
+\item[$\Phi:\Xi\to\mathbb{R}^{m}$] map from the state space to objective space. For objective-space experiments, $\Phi$ is the identity; for decision-space experiments, $\Phi=F$.
+\item[$Y(X)=(\Phi(x^{(1)}),\dots,\Phi(x^{(\mu)}))$] objective-space image of the current configuration.
+\item[$\front{\ell}(Y)$] the $\ell$th nondomination layer of $Y$.
+\item[$\mathcal I(\front{\ell}(Y))$] base indicator of the $\ell$th layer; in this paper $\mathcal I$ is either $\Mag(\Dom(\cdot))$ or $\HV(\cdot)$.
+\item[$R_{\sigma}(Y)$] short-range repulsion term in objective space.
+\item[$J_{\varepsilon,\tau}(X)$] scalar surrogate
+\[
+J^{\mathcal I}_{\varepsilon,\tau}(X):=\sum_{\ell=1}^{L(X)} \varepsilon^{\ell-1}\mathcal I\!\bigl(\front{\ell}(Y(X))\bigr)-\tau R_{\sigma}(Y(X)).
+\]
+\item[$h$] central finite-difference radius.
+\item[$\alpha$] ascent step size.
+\item[$K_{\max}$] maximum number of iterations.
+\item[$\delta_{\mathrm{val}}$] stopping tolerance for objective-value improvement.
+\item[$\texttt{normalize\_per\_point}$] Boolean switch that normalizes each point-direction separately.
+\end{description}
+
+For the reference implementation attached to the curved-front example, the default constants are
+\[
+\alpha=0.005,\qquad h=10^{-6},\qquad \varepsilon=10^{-3},\qquad \tau=2\cdot 10^{-4},\qquad \sigma=0.03,
+\]
+with \texttt{normalize\_per\_point}=\texttt{True} and, in that specific demo, box bounds $\mathrm{BOX\_LO}=0$ and $\mathrm{BOX\_HI}=1$. Example-specific runs in the main text may override these defaults.
+
+\begin{algorithm}[htbp]
+\caption{Projected set-gradient ascent for a layered indicator surrogate}
+\label{alg:layered-projected-fd}
+\begin{algorithmic}[1]
+\Require Feasible set $\Xi$, projection $\Pi_{\Xi^{\mu}}$, state-to-objective map $\Phi$, number of points $\mu$, parameters $\varepsilon,\tau,\sigma,h,\alpha,K_{\max},\delta_{\mathrm{val}}$, normalization flag \texttt{normalize\_per\_point}, initial configuration $X^{0}\in \Xi^{\mu}$
+\Ensure Final iterate $X^{k}$ and objective-space configuration $Y(X^{k})$
+\State $X^{0} \gets \Pi_{\Xi^{\mu}}(X^{0})$ \Comment{Project the initial guess to feasibility if needed}
+\State $V^{0} \gets J_{\varepsilon,\tau}(X^{0})$
+\For{$k=0,1,\dots,K_{\max}-1$}
+    \State $G^{k} \gets 0 \in \mathbb{R}^{\mu\times d}$
+    \For{$i=1,2,\dots,\mu$}
+        \For{$r=1,2,\dots,d$}
+            \State $E \gets 0 \in \mathbb{R}^{\mu\times d}$
+            \State $E_{i,r} \gets h$ \Comment{Perturb coordinate $r$ of point $i$ only}
+            \State $X^{+} \gets \Pi_{\Xi^{\mu}}(X^{k}+E)$
+            \State $X^{-} \gets \Pi_{\Xi^{\mu}}(X^{k}-E)$
+            \State $G^{k}_{i,r} \gets \dfrac{J_{\varepsilon,\tau}(X^{+})-J_{\varepsilon,\tau}(X^{-})}{2h}$
+        \EndFor
+    \EndFor
+    \If{\texttt{normalize\_per\_point}}
+        \For{$i=1,2,\dots,\mu$}
+            \State $n_i \gets \lVert G^{k}_{i,\bullet}\rVert_2$
+            \If{$n_i > 10^{-12}$}
+                \State $G^{k}_{i,\bullet} \gets G^{k}_{i,\bullet}/n_i$ \Comment{Equalize the step length of the active points}
+            \EndIf
+        \EndFor
+    \EndIf
+    \If{$\lVert G^{k}\rVert_F \le 10^{-12}$}
+        \State \Return $X^{k},Y(X^{k})$ \Comment{No numerically meaningful ascent direction found}
+    \EndIf
+    \State $\widetilde X^{k+1} \gets X^{k}+\alpha G^{k}$
+    \State $X^{k+1} \gets \Pi_{\Xi^{\mu}}(\widetilde X^{k+1})$ \Comment{Respect constraints after the ascent step}
+    \State $V^{k+1} \gets J_{\varepsilon,\tau}(X^{k+1})$
+    \If{$|V^{k+1}-V^{k}| \le \delta_{\mathrm{val}}$}
+        \State \Return $X^{k+1},Y(X^{k+1})$ \Comment{Objective improvement has become negligible}
+    \EndIf
+\EndFor
+\State \Return $X^{K_{\max}},Y(X^{K_{\max}})$
+\end{algorithmic}
+\end{algorithm}
+
+\subsection*{Walkthrough of one iteration}
+The logic of Algorithm~\ref{alg:layered-projected-fd} is easiest to read from the inside out.
+
+\paragraph{Step 1: map the current state to objective space.}
+The iterate is a configuration $X^{k}=(x^{(1)},\dots,x^{(\mu)})$. If the optimization is carried out directly in objective space, then $\Phi$ is the identity and $Y(X^{k})=X^{k}$. If the optimization is carried out in decision space, each point is first mapped by the objective function, so that $Y(X^{k})=(\Phi(x^{(1)}),\dots,\Phi(x^{(\mu)}))$.
+
+\paragraph{Step 2: evaluate the layered surrogate.}
+From $Y(X^{k})$ one computes the nondomination layers $\front{1},\front{2},\dots,\front{L(X^{k})}$. Each layer contributes the chosen base indicator, with weight $1,\varepsilon,\varepsilon^{2},\dots$, and the repulsion term is subtracted.  For layered magnitude the base indicator is the dominated-set magnitude; for layered hypervolume it is the anchored hypervolume. This gives the current scalar value $J_{\varepsilon,\tau}(X^{k})$.
+
+\paragraph{Step 3: build a coordinatewise direction field.}
+For each point $i$ and each coordinate $r$, the algorithm perturbs only the entry $(i,r)$ by $\pm h$, projects the perturbed configurations back to feasibility if necessary, and then forms the central finite difference
+\[
+\frac{J_{\varepsilon,\tau}(X^{k}+E)-J_{\varepsilon,\tau}(X^{k}-E)}{2h}.
+\]
+Collecting all these values yields the matrix $G^{k}\in\mathbb{R}^{\mu\times d}$. In smooth regions this approximates the ordinary gradient of the scalar surrogate with respect to the point coordinates; near switching configurations it should be interpreted as a Clarke-motivated numerical direction field.
+
+\paragraph{Step 4: optionally normalize pointwise.}
+If \texttt{normalize\_per\_point} is enabled, then each row $G^{k}_{i,\bullet}$ is divided by its Euclidean norm whenever that norm is nonzero. This produces a diffusion-like motion in which every active point takes a step of comparable length. In the curved-front experiments this is helpful because otherwise a few points with larger local finite-difference values can dominate the entire update.
+
+\paragraph{Step 5: take a projected ascent step.}
+The tentative update is $\widetilde X^{k+1}=X^{k}+\alpha G^{k}$. Because this tentative point may violate constraints, it is projected back to the feasible set, giving $X^{k+1}=\Pi_{\Xi^{\mu}}(\widetilde X^{k+1})$. For a box constraint this is simply coordinatewise clipping; for more general convex sets it is ordinary Euclidean projection.
+
+\paragraph{Step 6: update the objective value and stop if appropriate.}
+After projection, the new scalar value $V^{k+1}=J_{\varepsilon,\tau}(X^{k+1})$ is computed. The iteration terminates if either the full direction field is numerically zero or the objective improvement $|V^{k+1}-V^{k}|$ falls below the prescribed tolerance $\delta_{\mathrm{val}}$. Otherwise the method continues.
+
+\paragraph{How this matches the main text.}
+The algorithm in the appendix is the formal version of the scheme described in Section~5. Its main ingredients are exactly the same: evaluation of the layered surrogate, symmetric finite differences taken point coordinate by point coordinate, optional pointwise normalization, a small ascent step, and projection onto the feasible set. The appendix merely makes explicit two details that were only implicit in the main text: first, the distinction between state space and objective space through the map $\Phi$; and second, the use of a concrete stopping rule and default implementation constants.
+
+
+\section{The supersphere benchmark}
+\label{app:supersphere-benchmark}
+
+This appendix records the analytic form of the bulged three-objective benchmark used in Section~\ref{sec:three-objective-supersphere}.  Let
+\[
+\Delta_2:=\{x\in\mathbb{R}^3_{\ge 0}:x_1+x_2+x_3=1\}
+\]
+be the standard two-simplex and let $e_1,e_2,e_3$ denote the coordinate unit vectors.  For a curvature parameter $\gamma>0$, define
+\[
+F_\gamma(x)=\bigl(f_1(x),f_2(x),f_3(x)\bigr),\qquad
+f_i(x)=1-\left(\frac{\|x-e_i\|_2^2}{2}\right)^\gamma,
+\qquad i=1,2,3.
+\]
+The normalization by $2$ makes the largest squared vertex-to-vertex distance equal to one after scaling.  Hence $0\le f_i(x)\le 1$ on the simplex, $F_\gamma(e_1)=(1,0,0)$, $F_\gamma(e_2)=(0,1,0)$, and $F_\gamma(e_3)=(0,0,1)$.  At the barycenter $c=(1/3,1/3,1/3)$, one obtains
+\[
+F_\gamma(c)=\bigl(1-3^{-\gamma},1-3^{-\gamma},1-3^{-\gamma}\bigr),
+\]
+which gives a convenient scalar check on the amount of curvature introduced by $\gamma$.
+
+A useful analytic parameterization of the Pareto-front surface is obtained by writing
+\[
+x_1=u,
+\qquad
+x_2=(1-u)v,
+\qquad
+x_3=(1-u)(1-v),
+\qquad 0\le u,v\le 1.
+\]
+Then
+\[
+\mathcal{P}_\gamma
+=
+\left\{F_\gamma\bigl(u,(1-u)v,(1-u)(1-v)\bigr):0\le u,v\le 1\right\}
+\]
+is the analytic supersphere front used in the plots.  This parameterization covers the simplex exactly, although not uniformly with respect to surface area.  The efficient set in decision space is the simplex itself: improving one objective means moving closer to one vertex, which necessarily increases the normalized distance to at least one of the other vertices.
+
+
+
+For reproducibility, the script also contains a box-constrained variant with the same objective formula but with $x\in[-2,2]^3$.  The simplex version is the cleaner analytic benchmark because the front admits the explicit two-parameter description above.  The box-constrained version is useful as a stress test because projection no longer enforces the simplex geometry.
+
+\section{Reference stochastic optimizer}
+\label{app:stochastic-optimizer}
+
+The stochastic reference algorithm uses the same layered scalar objective as the gradient method, but it does not compute an indicator gradient.  At each iteration it perturbs one approximation-set point in a random unit direction, projects the perturbed configuration back to the feasible set, and accepts the move if the selected layered indicator value does not decrease.  It is therefore a simple projected stochastic hillclimber for the nonsmooth scalar surrogate.
+
+\begin{algorithm}[htbp]
+\caption{Projected stochastic hillclimbing reference optimizer}
+\label{alg:stochastic-reference}
+\begin{algorithmic}[1]
+\Require Feasible set $\Xi$, projection $\Pi_{\Xi^\mu}$, state-to-objective map $\Phi$, initial configuration $X^0$, initial step size $\alpha_0$, shrink factor $\rho\in(0,1)$, floor $\alpha_{\min}$, maximum retries $R$, maximum iterations $K_{\max}$, layered indicator choice $I\in\{\Mag_3,\HV_3\}$
+\State $X^0\gets \Pi_{\Xi^\mu}(X^0)$
+\State $V^0\gets J_I(X^0)$ and $\alpha\gets \alpha_0$
+\For{$k=0,1,\ldots,K_{\max}-1$}
+    \State accepted $\gets$ false, $\alpha_{\rm trial}\gets\alpha$
+    \For{$r=0,1,\ldots,R$}
+        \State Choose an index $i\in\{1,\ldots,\mu\}$ uniformly at random
+        \State Draw $d$ from a standard normal distribution and normalize it to $\|d\|_2=1$
+        \State $\widetilde X\gets X^k$ and replace $\widetilde x^{(i)}$ by $x^{k,(i)}+\alpha_{\rm trial}d$
+        \State $X^{\rm trial}\gets \Pi_{\Xi^\mu}(\widetilde X)$
+        \State $V^{\rm trial}\gets J_I(X^{\rm trial})$
+        \If{$V^{\rm trial}\ge V^k$}
+            \State $X^{k+1}\gets X^{\rm trial}$, $V^{k+1}\gets V^{\rm trial}$, $\alpha\gets\alpha_{\rm trial}$
+            \State accepted $\gets$ true
+            \State \textbf{break}
+        \Else
+            \State $\alpha_{\rm trial}\gets\max\{\rho\alpha_{\rm trial},\alpha_{\min}\}$
+        \EndIf
+    \EndFor
+    \If{accepted is false}
+        \State $X^{k+1}\gets X^k$, $V^{k+1}\gets V^k$, and keep or recover the step size according to the stagnation rule
+    \EndIf
+\EndFor
+\State \Return $X^{K_{\max}}$
+\end{algorithmic}
+\end{algorithm}
+
+In the implementation used for the three-dimensional runs, the stochastic method shares the same projection operators, nondomination-layer computation, repulsion term, retry loop, and step-size recovery logic as the gradient method.  Its source code is part of the reproducibility package referenced in the main text, and it implements the projected stochastic hillclimber summarized in Algorithm~\ref{alg:stochastic-reference}.  Its role is mainly diagnostic: it checks whether the chosen indicator can be improved by a very simple accept--reject search even in regions where indicator gradients are expensive, unreliable, or affected by many active-set switches.
+
+\begin{thebibliography}{99}
+
+\bibitem{clarke1990}
+F.~H.~Clarke,
+\emph{Optimization and Nonsmooth Analysis},
+Classics in Applied Mathematics~5, SIAM, Philadelphia, 1990.
+
+\bibitem{custodioetal2011}
+A.~L.~Custodio, J.~F.~A.~Madeira, A.~I.~F.~Vaz, and L.~N.~Vicente,
+``Direct Multisearch for Multiobjective Optimization,''
+\emph{SIAM Journal on Optimization} \textbf{21}(3) (2011), 1109--1140.
+
+\bibitem{deistetal2020}
+T.~M.~Deist, S.~C.~Maree, T.~Alderliesten, and P.~A.~N.~Bosman,
+``Multi-objective Optimization by Uncrowded Hypervolume Gradient Ascent,''
+in \emph{Parallel Problem Solving from Nature - PPSN XVI},
+Lecture Notes in Computer Science~12270, Springer, Cham, 2020, pp.~186--200.
+
+\bibitem{deutzemmerichwang2023hessian}
+A.~Deutz, M.~Emmerich, and H.~Wang,
+``The Hypervolume Indicator Hessian Matrix: Analytical Expression, Computational Time Complexity, and Sparsity,''
+in \emph{Evolutionary Multi-Criterion Optimization},
+Lecture Notes in Computer Science~13970, Springer Nature Switzerland, Cham, 2023, pp.~405--418.
+
+\bibitem{emmerichdeutzbeume2007}
+M.~Emmerich, A.~Deutz, and N.~Beume,
+``Gradient-Based/Evolutionary Relay Hybrid for Computing Pareto Front Approximations Maximizing the S-Metric,''
+in \emph{Hybrid Metaheuristics},
+Lecture Notes in Computer Science~4771, Springer, Berlin, Heidelberg, 2007, pp.~140--156.
+
+\bibitem{emmerich2026magnitudedominatedsetspareto}
+M.~T.~M.~Emmerich,
+\emph{The Magnitude of Dominated Sets: A Pareto Compliant Indicator Grounded in Metric Geometry},
+arXiv preprint arXiv:2604.18147, 2026. Available at \url{https://arxiv.org/abs/2604.18147}.
+
+\bibitem{sergeyev2017numerical}
+Y.~D.~Sergeyev,
+``Numerical infinities and infinitesimals: Methodology, applications, and repercussions on two Hilbert problems,''
+\emph{EMS Surveys in Mathematical Sciences} \textbf{4}(2) (2017), 219--320. doi:10.4171/EMSS/4-2-3.
+
+\bibitem{miettinenmakela1993}
+K.~Miettinen and M.~M.~Makela,
+``An Interactive Method for Nonsmooth Multiobjective Optimization with an Application to Optimal Control,''
+\emph{Optimization Methods and Software} \textbf{2}(1) (1993), 31--44.
+
+\bibitem{leinster2013}
+T.~Leinster,
+``The Magnitude of Metric Spaces,''
+\emph{Documenta Mathematica} \textbf{18} (2013), 857--905.
+
+\bibitem{emmerichdeutz2014}
+M.~Emmerich and A.~Deutz,
+``Time Complexity and Zeros of the Hypervolume Indicator Gradient Field,''
+in \emph{EVOLVE -- A Bridge between Probability, Set Oriented Numerics, and Evolutionary Computation III},
+Advances in Intelligent Systems and Computing~135, Springer International Publishing, Heidelberg, 2014, pp.~169--193.
+
+\bibitem{uribeetal2020hausdorffnewton}
+L.~Uribe, J.~M.~Bogoya, A.~Vargas, A.~Lara, G.~Rudolph, and O.~Sch{\"u}tze,
+``A Set Based Newton Method for the Averaged Hausdorff Distance for Multi-Objective Reference Set Problems,''
+\emph{Mathematics} \textbf{8}(10) (2020), Article~1822. doi:10.3390/math8101822.
+
+\bibitem{wangrendeutzemmerich2016}
+H.~Wang, Y.~Ren, A.~Deutz, and M.~Emmerich,
+``On Steering Dominated Points in Hypervolume Indicator Gradient Ascent for Bi-Objective Optimization,''
+in \emph{NEO 2015: Results of the Numerical and Evolutionary Optimization Workshop NEO 2015},
+Springer International Publishing, Cham, 2016, pp.~175--203.
+
+\bibitem{wangdeutzbackemmerich2017}
+H.~Wang, A.~Deutz, T.~B{\"a}ck, and M.~Emmerich,
+``Hypervolume Indicator Gradient Ascent Multi-Objective Optimization,''
+in \emph{Evolutionary Multi-Criterion Optimization},
+Lecture Notes in Computer Science~10173, Springer, Cham, 2017, pp.~654--669.
+
+\bibitem{wangemmerichdeutzhernandezschutze2023newton}
+H.~Wang, M.~Emmerich, A.~Deutz, V.~A.~S.~Hern{\'a}ndez, and O.~Sch{\"u}tze,
+``The Hypervolume Newton Method for Constrained Multi-Objective Optimization Problems,''
+\emph{Mathematical and Computational Applications} \textbf{28}(1) (2023), Article~10.
+
+\end{thebibliography}
+
+\end{document}

@@ -1,86 +1,57 @@
-# Magnitude Ascent reproducibility package
+# Reproducibility package: layered magnitude set gradients
 
-This repository contains the reproducibility material for the manuscript
+This flat archive contains the manuscript source, compiled manuscript PDF, and reproduction scripts for the experiments and figures in the article.
 
-> **Magnitude Ascent for Multiobjective Optimization: A Nonsmooth Geometric Indicator Approach**
+## Files
 
-The code reproduces the two-dimensional curved-front examples, the three-dimensional supersphere benchmark, and the convergence-behaviour experiments comparing layered magnitude and hypervolume indicators.
+- `layered_magnitude_set_gradient_article.tex` — main LaTeX source of the article.
+- `layered_magnitude_set_gradient_article.pdf` — compiled PDF corresponding to the source in this package.
+- `PRIMEarxiv.sty` — LaTeX style file used by the article.
+- `layered_magnitude_core_2d.py` — core projected finite-difference ascent code for the two-objective examples.
+- `reproduce_2d_path_figures.py` — exports sparse CSV samples for the two-dimensional path figures.
+- `reproduce_convergence_behaviour.py` — reproduces the convergence-behaviour experiments and tables for the supersphere examples.
+- `reproduce_h5_iteration30_vectorfield.py` — reproduces the H=5, iteration-30 magnitude vector-field snapshot and exports PNG/TikZ output.
+- `figure_h5_iteration30_vectorfield_standalone.tex` — standalone LaTeX/TikZ source for the vector-field illustration.
+- `figure_h5_iteration30_vectorfield_standalone.pdf` — compiled standalone vector-field figure.
+- `figure_h5_iteration30_vectorfield_preview.png` — PNG preview of the vector-field illustration.
+- `requirements.txt` — minimal Python requirements.
+- `compile_article.sh` — convenience script to compile the article with LuaLaTeX.
+- `run_reproduction_scripts.sh` — convenience script to run the reproduction scripts.
 
-## Repository layout
+## Python environment
 
-```text
-paper/
-  main.tex                 # manuscript source
-  main.pdf                 # compiled check PDF
-  primeARXIV.sty           # minimal compatibility style for compilation
-src/
-  reproduce_convergence_behaviour.py
-  reproduce_supersphere3d_results.py
-  layered_magnitude_3d_singlefile_bulged_hv_recovery_names_dd_stochastic_box.py
-  layered_clarke_ascent_2d.py
-results/
-  convergence/             # CSV/TEX outputs used by the convergence section
-  supersphere/             # CSV/TEX outputs used by the 3-D supersphere section
-docs/
-  README_convergence_behaviour.md
-  README_supersphere_3d_runner.md
-archive/
-  versioned packages used to assemble this release
-```
-
-## Installation
-
-Python 3.10+ is recommended.
+The scripts require Python 3.10 or newer and the packages listed in `requirements.txt`:
 
 ```bash
-python -m venv .venv
-source .venv/bin/activate      # Windows: .venv\Scripts\activate
-python -m pip install -r requirements.txt
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
 ```
 
-`numba` is used when available by the convergence script; the script keeps a NumPy fallback for portability.
+The scripts are written to avoid optional acceleration dependencies. They use NumPy for numerical work and Matplotlib for the vector-field preview.
 
-## Reproduce the convergence-behaviour section
+## Compile the article
+
+A TeX installation with LuaLaTeX and PGFPlots/TikZ is required. From the directory containing this README:
 
 ```bash
-python src/reproduce_convergence_behaviour.py --outdir results/convergence
+./compile_article.sh
 ```
 
-This self-contained script runs the curved 2-D experiment and the 3-D supersphere-box convergence experiments. It writes the CSV/TEX snippets used by the manuscript, including sampled convergence curves, final objective sets, layer-size tables, CPU timings, and perturbation/backtracking event logs.
+This runs LuaLaTeX twice on `layered_magnitude_set_gradient_article.tex`.
 
-The 500-episode convergence curves are sampled every 20 episodes in the exported TikZ/TEX data to keep the manuscript self-contained.
+## Reproduce numerical outputs
 
-## Reproduce the 3-D supersphere comparison tables and coordinates
+To run all reproduction scripts:
 
 ```bash
-python src/reproduce_supersphere3d_results.py \
-  --runner src/layered_magnitude_3d_singlefile_bulged_hv_recovery_names_dd_stochastic_box.py \
-  --outdir results/supersphere \
-  --quiet
+./run_reproduction_scripts.sh
 ```
 
-This script calls the single-file 3-D runner and reproduces the all-gamma and point-set sensitivity tables and coordinate snippets.
+The scripts write CSV, PNG, and TikZ/PDF-related output files into the current directory. Runtime depends on the machine and whether the full convergence experiment script is run with default settings.
 
-## Compile the manuscript
+## Notes
 
-```bash
-cd paper
-pdflatex -interaction=nonstopmode main.tex
-pdflatex -interaction=nonstopmode main.tex
-```
-
-A minimal `primeARXIV.sty` file is included only to make the archived source compile. Replace it with the official target style file if needed.
-
-## Quick checks
-
-```bash
-make check
-```
-
-## Notes on randomness and CPU time
-
-The scripts use fixed random seeds for reproducibility. CPU times are machine-dependent and are reported by the convergence script using Python's process-time clock.
-
-## License
-
-A license has not yet been chosen. See `LICENSE.md` before making the repository public.
+- This package is intentionally flat: there are no subfolders inside the archive.
+- The manuscript itself embeds the TikZ/PGF figure code needed for compilation.
+- The vector-field standalone files are included as convenience artifacts for checking the H=5 iteration-30 illustration independently.
